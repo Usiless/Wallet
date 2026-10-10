@@ -45,6 +45,16 @@ final class MovementRow {
   }
 }
 
+/// Lo que el formulario necesita para editar o clonar un movimiento.
+typedef MovementFormSource = ({
+  TransactionRecord transaction,
+  List<TransactionSplitRecord> splits,
+  InstallmentPlanRecord? plan,
+  MerchantRecord? merchant,
+  List<AccountRecord> accounts,
+  List<CategoryRecord> categories,
+});
+
 final class LedgerRepository {
   LedgerRepository(this.database);
 
@@ -165,6 +175,45 @@ final class LedgerRepository {
               ..orderBy([(e) => OrderingTerm.asc(e.installmentNumber)]))
             .get();
     return (plan: plan, entries: entries);
+  }
+
+  /// Movimiento confirmado con sus divisiones, plan, comercio y las cuentas y
+  /// categorías que referencia (aunque estén archivadas).
+  Future<MovementFormSource> loadForForm(String id) async {
+    final row = await (database.select(
+      database.ledgerTransactions,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    if (row == null || row.status != 'confirmed') {
+      throw StateError('El movimiento ya no está disponible.');
+    }
+    final splits = await splitsOf(id);
+    final plan = await (database.select(
+      database.installmentPlans,
+    )..where((t) => t.transactionId.equals(id))).getSingleOrNull();
+    final merchantId = row.merchantId;
+    final merchant = merchantId == null
+        ? null
+        : await (database.select(
+            database.merchants,
+          )..where((t) => t.id.equals(merchantId))).getSingleOrNull();
+    final accounts =
+        await (database.select(database.accounts)..where(
+              (t) => t.id.isIn(
+                [row.fromAccountId, row.toAccountId].whereType<String>(),
+              ),
+            ))
+            .get();
+    final categories = await (database.select(
+      database.categories,
+    )..where((t) => t.id.isIn(splits.map((s) => s.categoryId)))).get();
+    return (
+      transaction: row,
+      splits: splits,
+      plan: plan,
+      merchant: merchant,
+      accounts: accounts,
+      categories: categories,
+    );
   }
 
   Future<List<TransactionSplitRecord>> splitsOf(String transactionId) =>

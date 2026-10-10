@@ -255,6 +255,10 @@ final class MerchantService {
     return query.watch();
   }
 
+  Future<MerchantRecord?> find(String id) => (database.select(
+    database.merchants,
+  )..where((table) => table.id.equals(id))).getSingleOrNull();
+
   Future<MerchantRecord> byId(String id) => (database.select(
     database.merchants,
   )..where((table) => table.id.equals(id))).getSingle();

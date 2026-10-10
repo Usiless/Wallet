@@ -196,5 +196,49 @@ void main() {
         expect(await repository.splitsOf(plain), isEmpty);
       },
     );
+
+    test(
+      'carga un movimiento para el formulario con sus referencias archivadas',
+      () async {
+        final accounts = AccountsService(db);
+        final bank = await accounts.createAccount(
+          const CreateAccountDraft(
+            name: 'Banco',
+            type: AccountType.bank,
+            initialBalanceMinor: 100000,
+          ),
+        );
+        final food = await CategoryService(db)
+            .create('Comida', kind: 'expense');
+        final shop = await MerchantService(db).findOrCreate('Ecop');
+        final id = await LedgerService(db).create(
+          TransactionDraft(
+            type: TransactionType.expense,
+            amount: const Money(40000),
+            occurredAt: DateTime(2026, 9, 1),
+            fromAccountId: bank,
+            merchantId: shop,
+            splits: [SplitDraft(categoryId: food, amountMinor: 40000)],
+          ),
+        );
+        await accounts.setArchived(bank, true);
+        await CategoryService(db).setArchived(food, true);
+
+        final source = await LedgerRepository(db).loadForForm(id);
+
+        expect(source.transaction.id, id);
+        expect(source.splits.single.categoryId, food);
+        expect(source.plan, isNull);
+        expect(source.merchant!.id, shop);
+        expect(source.accounts.map((a) => a.id), [bank]);
+        expect(source.categories.map((c) => c.id), [food]);
+
+        await LedgerService(db).softDelete(id);
+        await expectLater(
+          LedgerRepository(db).loadForForm(id),
+          throwsStateError,
+        );
+      },
+    );
   });
 }

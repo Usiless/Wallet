@@ -136,7 +136,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
   @override
   void initState() {
     super.initState();
-    _bookGeneration = ref.read(databaseProvider).restoreGeneration;
+    _bookGeneration = ref.read(transactionFormServiceProvider).bookGeneration;
     _type = widget.initialType;
     _to = widget.toAccountId;
     if (widget.editId != null) _loadClone(widget.editId!);
@@ -684,11 +684,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
       final merchantId = f['merchantId'] as String?;
       final linkedMerchant = merchantId == null
           ? null
-          : await (ref
-                    .read(databaseProvider)
-                    .select(ref.read(databaseProvider).merchants)
-                  ..where((t) => t.id.equals(merchantId)))
-                .getSingleOrNull();
+          : await ref.read(merchantServiceProvider).find(merchantId);
       if (!mounted) return;
       setState(() {
         _templateName = template.name;
@@ -850,20 +846,13 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     try {
       final template = await _collectTemplate();
       if (template == null || !mounted) return;
-      await ref.read(databaseProvider).transaction(() async {
-        if (_bookGeneration != ref.read(databaseProvider).restoreGeneration) {
-          throw StateError(
-            'La base cambió. Cerrá el formulario y volvé a abrirlo.',
+      await ref
+          .read(transactionFormServiceProvider)
+          .saveTemplate(
+            template,
+            bookGeneration: _bookGeneration,
+            id: widget.editTemplate ? widget.savedTemplateId : null,
           );
-        }
-        await ref
-            .read(manualTemplateServiceProvider)
-            .save(
-              template.name,
-              template.fields,
-              id: widget.editTemplate ? widget.savedTemplateId : null,
-            );
-      });
       if ((template.fields['schedule'] as Map?)?['enabled'] == true &&
           (template.fields['reminders'] as Map?)?['enabled'] == true) {
         await _requestReminderPermission();
@@ -1135,36 +1124,15 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
   }
 
   Future<void> _loadClone(String id) async {
-    final database = ref.read(databaseProvider);
     setState(() => _loadingTemplate = true);
     try {
-      final row = await (database.select(
-        database.ledgerTransactions,
-      )..where((t) => t.id.equals(id))).getSingleOrNull();
-      if (row == null || row.status != 'confirmed') {
-        throw StateError('El movimiento ya no está disponible.');
-      }
-      final splits = await (database.select(
-        database.transactionSplits,
-      )..where((t) => t.transactionId.equals(id))).get();
-      final plan = await (database.select(
-        database.installmentPlans,
-      )..where((t) => t.transactionId.equals(id))).getSingleOrNull();
-      final merchant = row.merchantId == null
-          ? null
-          : await (database.select(
-              database.merchants,
-            )..where((t) => t.id.equals(row.merchantId!))).getSingleOrNull();
-      final oldAccounts =
-          await (database.select(database.accounts)..where(
-                (t) => t.id.isIn(
-                  [row.fromAccountId, row.toAccountId].whereType<String>(),
-                ),
-              ))
-              .get();
-      final oldCategories = await (database.select(
-        database.categories,
-      )..where((t) => t.id.isIn(splits.map((s) => s.categoryId)))).get();
+      final source = await ref.read(ledgerRepositoryProvider).loadForForm(id);
+      final row = source.transaction;
+      final splits = source.splits;
+      final plan = source.plan;
+      final merchant = source.merchant;
+      final oldAccounts = source.accounts;
+      final oldCategories = source.categories;
       if (!mounted) return;
       setState(() {
         _editingAccounts = oldAccounts;

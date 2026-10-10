@@ -110,6 +110,23 @@ final class TransactionFormService {
   final ScheduledTemplateService scheduledTemplates;
   final SettingsRepository settings;
 
+  /// Contador de restauraciones: un formulario abierto antes de restaurar
+  /// los datos ya no puede guardar.
+  int get bookGeneration => database.restoreGeneration;
+
+  Future<void> saveTemplate(
+    TemplateToSave template, {
+    required int bookGeneration,
+    String? id,
+  }) => database.transaction(() async {
+    if (bookGeneration != database.restoreGeneration) {
+      throw StateError(
+        'La base cambió. Cerrá el formulario y volvé a abrirlo.',
+      );
+    }
+    await templates.save(template.name, template.fields, id: id);
+  });
+
   Future<TransactionFormResult> submit(TransactionFormValues values) async {
     final money = Money.parse(values.amountText);
     final installments = values.installments;
