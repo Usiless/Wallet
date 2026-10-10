@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/config/feature_flags.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 final class NotificationSimulatorScreen extends ConsumerStatefulWidget {
   const NotificationSimulatorScreen({super.key});
@@ -101,10 +102,7 @@ class _NotificationSimulatorScreenState
         );
       }
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (mounted) showError(context, error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }

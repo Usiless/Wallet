@@ -14,6 +14,7 @@ import '../../transactions/presentation/ledger_actions.dart';
 import '../../transactions/presentation/movement_detail.dart';
 import '../../credit_cards/domain/credit_card_cycle.dart';
 import '../../../shared/widgets/app_fab.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 final class AccountsScreen extends ConsumerStatefulWidget {
   const AccountsScreen({this.accountId, super.key});
@@ -283,10 +284,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                     .read(accountsServiceProvider)
                     .setSavingsIncludedInAvailableMoney(account.id, value);
               } catch (error) {
-                if (mounted) {
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text('$error')));
-                }
+                if (mounted) showError(context, error);
               }
             },
           ),
@@ -380,10 +378,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
       if (draft == null || !mounted) return;
       await ref.read(accountsServiceProvider).edit(account.id, draft);
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 
@@ -393,10 +388,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
           .read(accountsServiceProvider)
           .setArchived(account.id, !account.isArchived);
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 
@@ -405,15 +397,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
     if (draft == null || !context.mounted) return;
     try {
       await ref.read(accountsServiceProvider).createAccount(draft);
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Cuenta creada.')));
-      }
+      if (context.mounted) showMessage(context, 'Cuenta creada.');
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 }

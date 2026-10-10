@@ -7,6 +7,7 @@ import '../../../core/database/app_database.dart';
 import '../data/ledger_repository.dart';
 import 'ledger_actions.dart';
 import '../../../shared/widgets/money_text.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 Future<void> showMovementDetail(
   BuildContext context,
@@ -168,10 +169,7 @@ Future<void> showMovementDetail(
                           try {
                             await ledger.restore(row.id);
                           } catch (e) {
-                            if (context.mounted) {
-                              ScaffoldMessenger.of(context)
-                                  .showSnackBar(SnackBar(content: Text('$e')));
-                            }
+                            if (context.mounted) showError(context, e);
                           }
                         },
                       ),

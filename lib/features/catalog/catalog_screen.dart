@@ -6,6 +6,7 @@ import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
 import '../../shared/widgets/app_fab.dart';
 import '../../shared/widgets/text_prompt_dialog.dart';
+import '../../shared/widgets/app_snack.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
@@ -312,8 +313,6 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
   }
 
   void _error(Object e) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-    }
+    if (context.mounted) showError(context, e);
   }
 }

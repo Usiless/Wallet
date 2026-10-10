@@ -6,6 +6,7 @@ import '../../../core/database/app_database.dart';
 import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../accounts/presentation/create_account_dialog.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 typedef CandidateReview = ({
   Money amount,
@@ -244,10 +245,7 @@ class _CandidateReviewDialogState extends ConsumerState<CandidateReviewDialog> {
                     setState(() => available = refreshed);
                   }
                 } catch (error) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text('$error')));
-                  }
+                  if (context.mounted) showError(context, error);
                 }
               },
             ),
