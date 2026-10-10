@@ -4,15 +4,22 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
+import '../../shared/widgets/app_fab.dart';
+import '../../shared/widgets/text_prompt_dialog.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
-    final db = ref.watch(databaseProvider);
     return switch (kind) {
-      'merchants' => db.select(db.merchants).watch(),
-      'categories' => db.select(db.categories).watch(),
-      'accountAliases' => db.select(db.accountAliases).watch(),
-      _ => db.select(db.merchantAliases).watch(),
+      'merchants' =>
+        ref
+            .watch(merchantServiceProvider)
+            .watchMerchants(includeArchived: true),
+      'categories' =>
+        ref
+            .watch(categoryServiceProvider)
+            .watchCategories(includeArchived: true),
+      'accountAliases' => ref.watch(accountsServiceProvider).watchAliases(),
+      _ => ref.watch(merchantServiceProvider).watchAliases(),
     };
   },
 );
@@ -159,8 +166,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        heroTag: null,
+      floatingActionButton: AppFab(
         onPressed: _add,
         tooltip: 'Agregar',
         child: const Icon(Icons.add),
@@ -175,41 +181,18 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     MerchantAliasRecord a => a.alias,
     _ => '',
   };
-  Future<String?> _text(String title, String initial) async {
-    final controller = TextEditingController(text: initial);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
-    await Future<void>.delayed(Duration.zero);
-    controller.dispose();
-    return result;
-  }
+  Future<String?> _text(String title, String initial) => showTextPrompt(
+    context,
+    title: title,
+    label: 'Nombre',
+    confirmLabel: 'Guardar',
+    initial: initial,
+  );
 
   Future<String?> _target(bool account) async {
     final choices = account
         ? await ref.read(accountsServiceProvider).getAccounts()
-        : await ref
-              .read(databaseProvider)
-              .select(ref.read(databaseProvider).merchants)
-              .get();
+        : await ref.read(merchantServiceProvider).listMerchants();
     if (!mounted) return null;
     return showDialog<String>(
       context: context,
@@ -237,7 +220,6 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
 
   Future<void> _action(Object row, String action) async {
     try {
-      final db = ref.read(databaseProvider);
       if (action == 'archive') {
         if (row is MerchantRecord) {
           await ref
@@ -251,14 +233,10 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
         }
       } else if (action == 'delete') {
         if (row is AccountAliasRecord) {
-          await (db.delete(
-            db.accountAliases,
-          )..where((t) => t.id.equals(row.id))).go();
+          await ref.read(accountsServiceProvider).removeAlias(row.id);
         }
         if (row is MerchantAliasRecord) {
-          await (db.delete(
-            db.merchantAliases,
-          )..where((t) => t.id.equals(row.id))).go();
+          await ref.read(merchantServiceProvider).removeAlias(row.id);
         }
       } else if (row is AccountAliasRecord || row is MerchantAliasRecord) {
         final target = await _target(row is AccountAliasRecord);

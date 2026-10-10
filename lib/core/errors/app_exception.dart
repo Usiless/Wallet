@@ -12,10 +12,6 @@ final class ValidationException extends AppException {
   const ValidationException(super.message, {super.technicalDetail});
 }
 
-final class StorageException extends AppException {
-  const StorageException(super.message, {super.technicalDetail});
-}
-
 final class BackupException extends AppException {
   const BackupException(super.message, {super.technicalDetail});
 }

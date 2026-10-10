@@ -175,14 +175,6 @@ class MainActivity : FlutterActivity() {
                         NotificationQueue.read(preferences).filter { it.optString("captureId") != captureId })
                     result.success(null)
                 }
-                "drainEnvelopes" -> {
-                    val queue = NotificationQueue.read(preferences).filter {
-                        BuildConfig.DEVELOPER_TOOLS_ENABLED ||
-                            (!it.optBoolean("isTest", false) && NotificationQueue.defaultPackages.contains(it.optString("packageName")))
-                    }
-                    NotificationQueue.write(preferences, emptyList())
-                    result.success(queue.map { it.toFlutterMap() })
-                }
                 "clearCapturedEvents" -> {
                     NotificationQueue.write(preferences, emptyList())
                     result.success(null)

@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/money/allocation.dart';
 import '../../payments/domain/pending_payment_service.dart';
 
 typedef ReportRequest = ({
@@ -344,15 +345,15 @@ class _Transaction {
     for (final entry in schedule) {
       final totalWeight = remaining.fold<int>(0, (sum, v) => sum + v);
       if (totalWeight <= 0) continue;
-      var cumulative = 0, assigned = 0;
+      final portions = allocateCumulative(entry.amount, remaining);
       final parts = <_Part>[];
       for (var i = 0; i < weights.length; i++) {
-        cumulative += remaining[i];
-        final total = entry.amount * cumulative ~/ totalWeight;
-        final portion = total - assigned;
-        assigned = total;
-        remaining[i] -= portion;
-        parts.add((id: weights[i].id, name: weights[i].name, amount: portion));
+        remaining[i] -= portions[i];
+        parts.add((
+          id: weights[i].id,
+          name: weights[i].name,
+          amount: portions[i],
+        ));
       }
       yield _Impact(entry.date, parts);
     }

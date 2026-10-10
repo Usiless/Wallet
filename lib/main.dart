@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:timezone/data/latest.dart' as tz;
 
 import 'app/app.dart';
 import 'app/providers.dart';
@@ -12,7 +11,6 @@ import 'features/onboarding/data/onboarding_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  tz.initializeTimeZones();
   await cleanupBackupWorkingFiles();
   final database = AppDatabase();
   final settings = SettingsRepository(database);

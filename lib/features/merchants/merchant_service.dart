@@ -246,9 +246,36 @@ final class MerchantService {
     return id;
   }
 
-  Stream<List<MerchantRecord>> watchMerchants() =>
-      (database.select(database.merchants)
-            ..where((table) => table.isArchived.equals(false))
-            ..orderBy([(table) => OrderingTerm.asc(table.name)]))
-          .watch();
+  Stream<List<MerchantRecord>> watchMerchants({bool includeArchived = false}) {
+    final query = database.select(database.merchants);
+    if (!includeArchived) {
+      query.where((table) => table.isArchived.equals(false));
+    }
+    query.orderBy([(table) => OrderingTerm.asc(table.name)]);
+    return query.watch();
+  }
+
+  Future<MerchantRecord?> find(String id) => (database.select(
+    database.merchants,
+  )..where((table) => table.id.equals(id))).getSingleOrNull();
+
+  Future<MerchantRecord> byId(String id) => (database.select(
+    database.merchants,
+  )..where((table) => table.id.equals(id))).getSingle();
+
+  Future<List<MerchantRecord>> listMerchants({bool includeArchived = false}) {
+    final query = database.select(database.merchants);
+    if (!includeArchived) {
+      query.where((table) => table.isArchived.equals(false));
+    }
+    query.orderBy([(table) => OrderingTerm.asc(table.createdAt)]);
+    return query.get();
+  }
+
+  Stream<List<MerchantAliasRecord>> watchAliases() =>
+      database.select(database.merchantAliases).watch();
+
+  Future<void> removeAlias(String aliasId) => (database.delete(
+    database.merchantAliases,
+  )..where((table) => table.id.equals(aliasId))).go();
 }

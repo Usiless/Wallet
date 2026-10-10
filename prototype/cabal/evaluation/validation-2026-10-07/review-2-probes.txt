@@ -1,8 +1,0 @@
-R06 increased + valid template {"pending":200000,"splits":[{"category":"food","amount":80000},{"category":"home","amount":120000}]}
-R06 reduced fully paid {"remaining":0,"pending":0}
-R05 resolved + carry protected {"selected":{"enabled":true,"days":5,"time":"10:30","onDue":true},"remaining":[0,110000]}
-R06 duplicate atomic rejection {"unchanged":true}
-R03/R04 no duplication + merchant {"dates":["2026-10-31","2026-11-30"],"merchant":"Corregido"}
-R02 uncategorized {"total":33,"uncategorized":17}
-R07 plan amount-only edit drifts {"before":["2027-01-31","2027-02-28","2027-03-31"],"actual":["2027-01-31","2027-02-28","2027-03-31"],"expected":["2027-01-31","2027-02-28","2027-03-31"],"confirmed":false}
-R07 recurring amount-only edit drifts {"before":{"next":"2026-12-31","anchor":"2026-10-31"},"actual":{"next":"2026-12-31","anchor":"2026-10-31"},"expectedNext":"2026-12-31"}

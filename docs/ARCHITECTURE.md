@@ -16,6 +16,8 @@ Ciclo de vida Flutter / captura visible → procesar cola → procesar programad
 
 `PostingCalculator` calcula efectos; `LedgerService` guarda movimiento, partidas, divisiones y auditoría transaccionalmente. Plantillas, revisiones y planes coordinan sus escrituras con la transacción financiera. Importes persistidos enteros; `Money.format` puede usar división para presentación, por lo que «no usa double en ninguna parte» sería demasiado amplio. PYG es la interfaz actual, no soporte multimoneda completo.
 
+El formulario de movimiento sigue Vista → ViewModel → servicio: `TransactionFormScreen` dibuja `TransactionFormState` y reenvía lo que hace el usuario a `TransactionFormNotifier` (Riverpod); este aplica las reglas del estado y guarda mediante `TransactionFormService`. Los diálogos, selectores de fecha, permiso de avisos y navegación se resuelven en la vista. Las demás pantallas piden sus lecturas a los servicios y no consultan Drift; solo el formulario tiene ViewModel porque solo él acumula reglas de guardado y estado propio.
+
 `LedgerRepository.watchMovements` proyecta cuotas como filas mensuales enlazadas sin crear transacciones duplicadas. `ReportService` es la fuente de cálculo compartida por reportes y presupuestos, incluido el reparto entero de categorías (H01). La deuda utiliza la compra completa y los pagos siguen fuera del gasto.
 
 ## Directorios y evidencia
@@ -24,7 +26,7 @@ Ciclo de vida Flutter / captura visible → procesar cola → procesar programad
 - [Core](../lib/core): base, dinero, seguridad, backup y notificaciones.
 - [Features](../lib/features): pantallas/servicios financieros, plantillas y herramientas de desarrollo separadas.
 - [Android Kotlin](../android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales): listener, cola, puente y `DeviceCrypto`.
-- [Pruebas](../test) y [smoke de integración](../integration_test/app_smoke_test.dart): evidencias limitadas al entorno ejecutado.
+- [Pruebas](../test): evidencias limitadas al entorno ejecutado.
 - [Prototipo](../prototype/cabal): libro ficticio JS/localStorage; no conecta con Flutter ni prueba Android.
 
 ## Persistencia y recuperación

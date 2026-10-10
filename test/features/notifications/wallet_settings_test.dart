@@ -88,68 +88,67 @@ void main() {
       expect(methods, ['queuedEnvelopes', 'acknowledgeEnvelope']);
     },
   );
-  testWidgets(
-    'P04/F14: Wallet a 320/texto 2x recupera fallo de carga y ajustes',
-    (tester) async {
-      tester.view.physicalSize = const Size(320, 844);
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.resetPhysicalSize);
-      addTearDown(tester.view.resetDevicePixelRatio);
-      final db = AppDatabase.forTesting(NativeDatabase.memory());
-      addTearDown(db.close);
-      await db.customStatement(
-        'ALTER TABLE app_settings RENAME TO unavailable_settings',
-      );
-      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
-          .setMockMethodCallHandler(channel, (_) async {
-            throw PlatformException(code: 'test_failure');
-          });
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [databaseProvider.overrideWithValue(db)],
-          child: MaterialApp(
-            builder: (context, child) => MediaQuery(
-              data: MediaQuery.of(context)
-                  .copyWith(textScaler: const TextScaler.linear(2)),
-              child: child!,
-            ),
-            home: const WalletSettingsScreen(),
+  testWidgets('Wallet a 320/texto 2x recupera fallo de carga y ajustes', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(320, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await db.customStatement(
+      'ALTER TABLE app_settings RENAME TO unavailable_settings',
+    );
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (_) async {
+          throw PlatformException(code: 'test_failure');
+        });
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [databaseProvider.overrideWithValue(db)],
+        child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: const TextScaler.linear(2)),
+            child: child!,
           ),
+          home: const WalletSettingsScreen(),
         ),
-      );
-      await tester.pumpAndSettle();
-      expect(
-        find.text('No se pudo cargar la configuración de Wallet.'),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), isNull);
-      await db.customStatement(
-        'ALTER TABLE unavailable_settings RENAME TO app_settings',
-      );
-      await tester.tap(find.text('Reintentar'));
-      await tester.pumpAndSettle();
-      expect(find.text('Reintentar'), findsNothing);
-      final detect = find.widgetWithText(
-        SwitchListTile,
-        'Detectar compras de Google Wallet',
-      );
-      await tester.scrollUntilVisible(detect, 250);
-      expect(tester.widget<SwitchListTile>(detect).onChanged, isNotNull);
-      final access = find.text('Acceso a notificaciones en Android');
-      await tester.scrollUntilVisible(access, 200);
-      await tester.tap(access);
-      await tester.pumpAndSettle();
-      expect(
-        find.text('No se pudieron abrir los ajustes de Android.'),
-        findsOneWidget,
-      );
-      expect(tester.takeException(), isNull);
-      expect(
-        await SettingsRepository(db).readBool('notification_listener_enabled'),
-        isFalse,
-      );
-      await tester.pumpWidget(const SizedBox.shrink());
-      await tester.pumpAndSettle();
-    },
-  );
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No se pudo cargar la configuración de Wallet.'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    await db.customStatement(
+      'ALTER TABLE unavailable_settings RENAME TO app_settings',
+    );
+    await tester.tap(find.text('Reintentar'));
+    await tester.pumpAndSettle();
+    expect(find.text('Reintentar'), findsNothing);
+    final detect = find.widgetWithText(
+      SwitchListTile,
+      'Detectar compras de Google Wallet',
+    );
+    await tester.scrollUntilVisible(detect, 250);
+    expect(tester.widget<SwitchListTile>(detect).onChanged, isNotNull);
+    final access = find.text('Acceso a notificaciones en Android');
+    await tester.scrollUntilVisible(access, 200);
+    await tester.tap(access);
+    await tester.pumpAndSettle();
+    expect(
+      find.text('No se pudieron abrir los ajustes de Android.'),
+      findsOneWidget,
+    );
+    expect(tester.takeException(), isNull);
+    expect(
+      await SettingsRepository(db).readBool('notification_listener_enabled'),
+      isFalse,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
 }

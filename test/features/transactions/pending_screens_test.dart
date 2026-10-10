@@ -2,6 +2,7 @@ import 'package:drift/native.dart';
 import 'package:finanzas_locales/app/providers.dart';
 import 'package:finanzas_locales/core/database/app_database.dart';
 import 'package:finanzas_locales/features/payments/presentation/payments_screen.dart';
+import 'package:finanzas_locales/features/payments/presentation/payment_detail_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
 import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';

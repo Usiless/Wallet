@@ -1,6 +1,6 @@
 # Revisión general · 2026-10-04
 
-**Informe histórico con seguimientos.** Los pendientes iniciales 1–3 fueron sustituidos por los apartados de seguimiento de este mismo informe. Los conteos corresponden a ejecuciones anteriores, no a esta auditoría. Estado consolidado: [ROADMAP](ROADMAP.md); nuevas verificaciones: [DOCUMENTATION_AUDIT](DOCUMENTATION_AUDIT.md).
+**Informe histórico con seguimientos.** Los pendientes iniciales 1–3 fueron sustituidos por los apartados de seguimiento de este mismo informe. Los conteos corresponden a ejecuciones anteriores, no a esta auditoría. Estado consolidado: [ROADMAP](ROADMAP.md).
 
 Alcance: lectura del código de formularios, navegación, cuentas, movimientos y saldos, cuotas, presupuestos, reportes, backup/restauración, bloqueo y captura de notificaciones; análisis estático y pruebas automatizadas. No se construyó ni instaló un APK. No es una certificación completa en teléfono.
 

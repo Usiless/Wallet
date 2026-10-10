@@ -18,6 +18,7 @@ import '../features/onboarding/data/onboarding_service.dart';
 import '../features/transactions/data/category_service.dart';
 import '../features/transactions/data/ledger_repository.dart';
 import '../features/transactions/data/ledger_service.dart';
+import '../features/transactions/data/transaction_form_service.dart';
 import '../features/transactions/domain/ledger_models.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
@@ -58,17 +59,27 @@ final merchantServiceProvider = Provider(
 final merchantsProvider = StreamProvider<List<MerchantRecord>>(
   (ref) => ref.watch(merchantServiceProvider).watchMerchants(),
 );
-final merchantAliasesProvider = StreamProvider<List<MerchantAliasRecord>>((
-  ref,
-) {
-  final database = ref.watch(databaseProvider);
-  return database.select(database.merchantAliases).watch();
-});
+final merchantAliasesProvider = StreamProvider<List<MerchantAliasRecord>>(
+  (ref) => ref.watch(merchantServiceProvider).watchAliases(),
+);
 final ledgerServiceProvider = Provider(
   (ref) => LedgerService(ref.watch(databaseProvider)),
 );
 final ledgerRepositoryProvider = Provider(
   (ref) => LedgerRepository(ref.watch(databaseProvider)),
+);
+final transactionFormServiceProvider = Provider(
+  (ref) => TransactionFormService(
+    database: ref.watch(databaseProvider),
+    ledger: ref.watch(ledgerServiceProvider),
+    installmentService: ref.watch(installmentServiceProvider),
+    merchants: ref.watch(merchantServiceProvider),
+    categories: ref.watch(categoryServiceProvider),
+    pendingPayments: ref.watch(pendingPaymentServiceProvider),
+    templates: ref.watch(manualTemplateServiceProvider),
+    scheduledTemplates: ref.watch(scheduledTemplateServiceProvider),
+    settings: ref.watch(settingsProvider),
+  ),
 );
 final installmentServiceProvider = Provider(
   (ref) => InstallmentService(ref.watch(databaseProvider)),
@@ -116,9 +127,6 @@ final accountsProvider = StreamProvider<List<AccountRecord>>((ref) {
 final categoriesProvider = StreamProvider<List<CategoryRecord>>((ref) {
   return ref.watch(categoryServiceProvider).watchCategories();
 });
-final transactionsProvider = StreamProvider<List<TransactionRecord>>((ref) {
-  return ref.watch(ledgerRepositoryProvider).watchTransactions();
-});
 final accountBalancesProvider = StreamProvider<List<AccountBalance>>((ref) {
   return ref.watch(ledgerRepositoryProvider).watchAccountBalances();
 });
@@ -128,62 +136,16 @@ final pendingCandidatesProvider = StreamProvider<List<PaymentCandidateRecord>>((
   return ref.watch(notificationIngestionProvider).watchPending();
 });
 
-final monthlyTransactionsProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, DateTime>((ref, month) {
-      return ref.watch(ledgerRepositoryProvider).watchConfirmedMonth(month);
-    });
-
-final historyTransactionsProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, int>((ref, limit) {
-      return ref
-          .watch(ledgerRepositoryProvider)
-          .watchTransactions(limit: limit);
-    });
-
 final allAccountsProvider = StreamProvider<List<AccountRecord>>(
   (ref) =>
       ref.watch(accountsServiceProvider).watchAccounts(includeArchived: true),
 );
-
-final filteredHistoryProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, ({HistoryFilter filter, int limit})>(
-      (ref, request) => ref
-          .watch(ledgerRepositoryProvider)
-          .watchFiltered(filter: request.filter, limit: request.limit),
-    );
 
 final allCategoriesProvider = StreamProvider<List<CategoryRecord>>(
   (ref) =>
       ref.watch(categoryServiceProvider).watchCategories(includeArchived: true),
 );
 
-final reportHistoryProvider = StreamProvider.autoDispose
-    .family<
-      List<TransactionRecord>,
-      ({
-        HistoryFilter filter,
-        int limit,
-        bool quotaPeriod,
-        bool unclassified,
-        bool reportOnly,
-        bool withoutMerchant,
-      })
-    >(
-      (ref, request) => ref
-          .watch(ledgerRepositoryProvider)
-          .watchFiltered(
-            filter: request.filter,
-            limit: request.limit,
-            installmentPeriod: request.quotaPeriod,
-            unclassifiedOnly: request.unclassified,
-            reportOnly: request.reportOnly,
-            withoutMerchant: request.withoutMerchant,
-          ),
-    );
-
-final movementsProvider = StreamProvider<List<MovementRow>>(
-  (ref) => ref.watch(ledgerRepositoryProvider).watchMovements(),
-);
 final movementHistoryProvider = StreamProvider.autoDispose
     .family<
       List<MovementRow>,

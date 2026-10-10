@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
 import '../../../core/errors/app_exception.dart';
+import '../../../core/money/allocation.dart';
 import '../../../core/money/money.dart';
 import '../domain/ledger_models.dart';
 import '../domain/posting_calculator.dart';
@@ -196,19 +197,13 @@ final class LedgerService {
             (weights[split.categoryId]! - split.amountMinor).clamp(0, 1 << 62);
       }
     }
-    final remainingWeight = weights.values.fold<int>(0, (sum, v) => sum + v);
-    int cumulative = 0, assigned = 0;
-    final splits = <SplitDraft>[];
-    for (final entry in weights.entries) {
-      if (remainingWeight == 0) break;
-      cumulative += entry.value;
-      final total = amountMinor * cumulative ~/ remainingWeight;
-      final portion = total - assigned;
-      assigned = total;
-      if (portion > 0) {
-        splits.add(SplitDraft(categoryId: entry.key, amountMinor: portion));
-      }
-    }
+    final categories = weights.keys.toList();
+    final portions = allocateCumulative(amountMinor, weights.values.toList());
+    final splits = [
+      for (var i = 0; i < categories.length; i++)
+        if (portions[i] > 0)
+          SplitDraft(categoryId: categories[i], amountMinor: portions[i]),
+    ];
     return create(
       TransactionDraft(
         type: TransactionType.refund,

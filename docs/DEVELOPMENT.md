@@ -69,7 +69,7 @@ Usar una instalación de prueba y datos descartables. El APK lo prepara el usuar
 6. Crear backup y restaurar en instalación de prueba; verificar errores de contraseña, corrupción, esquema y conservación de datos. Probar actualización de base antigua, Keystore, regreso al bloqueo y alternativa sin biometría. No probar pérdida de claves sobre la única copia de datos.
 7. Comprobar ausencia de accesos CSV/JSON y conservación de importados históricos y backup. En debug de desarrollo comprobar simulador/diagnóstico; en uso normal, profile y release comprobar que rutas y operaciones experimentales estén bloqueadas.
 
-Las pruebas unitarias y widgets no prueban listener, Keystore, ciclo de vida, SAF, biometría ni barreras del binario Android. `integration_test/app_smoke_test.dart` es un smoke test; no se ejecutó en esta auditoría ni cubre por sí solo esta lista. No presentar este procedimiento pendiente como ejecución realizada.
+Las pruebas unitarias y widgets no prueban listener, Keystore, ciclo de vida, SAF, biometría ni barreras del binario Android. No hay pruebas de integración en dispositivo. No presentar este procedimiento pendiente como ejecución realizada.
 
 
 ## H01 y traslado Flutter · 2026-10-07

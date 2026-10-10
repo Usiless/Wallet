@@ -16,7 +16,6 @@ La configuración empieza sin cuentas y puede terminar así; para registrar movi
 | Importar/exportar o recuperar datos | [CSV/JSON](docs/CSV_FORMAT.md) y [backup cifrado](docs/BACKUP_FORMAT.md) |
 | Revisar seguridad y límites conocidos | [Privacidad](docs/PRIVACY.md), [limitaciones](docs/KNOWN_LIMITATIONS.md) y [herramientas de desarrollo](docs/DEVELOPER_TOOLS.md) |
 | Revisar dependencias | [Dependencias y licencias](docs/THIRD_PARTY_LICENSES.md) |
-| Revisar esta reorganización y sus pruebas | [Auditoría documental](docs/DOCUMENTATION_AUDIT.md) |
 
 ## Estado al 2026-10-06
 
@@ -28,7 +27,7 @@ La base activa/WAL y la cola tienen cifrado local; Android Keystore protege la c
 
 ## Historia y mantenimiento
 
-[Changelog](CHANGELOG.md), [revisión técnica de octubre](docs/APP_REVIEW.md), [checkpoint por fases](docs/IMPLEMENTATION_STATUS.md), [plan de diseño](docs/PROTOTYPE_PLAN.md) e [informe visual](prototype/cabal/evaluation/REPORT.md) conservan contexto, no son el roadmap vigente. La [especificación original](docs/archive/Prompt_maestro_finanzas_flutter.md) es histórica.
+[Changelog](CHANGELOG.md), [revisión técnica de octubre](docs/APP_REVIEW.md), [plan de diseño](docs/PROTOTYPE_PLAN.md) e [informe visual](prototype/cabal/evaluation/REPORT.md) conservan contexto, no son el roadmap vigente. La [especificación original](docs/archive/Prompt_maestro_finanzas_flutter.md) es histórica.
 
 Al cambiar una decisión, actualizar la base solo con aprobación explícita; al observar código o pruebas, actualizar estados/evidencias en el roadmap. Cada tema técnico tiene un documento principal: los demás lo enlazan. No resolver discrepancias de producto a partir del código.
 

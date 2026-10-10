@@ -1,6 +1,6 @@
 # Changelog
 
-Registro histórico de cambios, no evidencia actual de ejecución ni aprobación de ampliaciones. Estado vigente y límites: [ROADMAP](docs/ROADMAP.md). Se conservan las entradas originales; los resultados documentales del 2026-10-06 están en [auditoría](docs/DOCUMENTATION_AUDIT.md).
+Registro histórico de cambios, no evidencia actual de ejecución ni aprobación de ampliaciones. Estado vigente y límites: [ROADMAP](docs/ROADMAP.md). Se conservan las entradas originales.
 
 ## 0.1.0 - 2026-07-19
 

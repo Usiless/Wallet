@@ -209,7 +209,7 @@ void main() {
     expect(balance.balanceMinor, 950000);
   });
 
-  test('reporte mensual incluye más de 100 compras y excluye pendientes y otros meses', () async {
+  test('historial mensual con límite alto incluye más de 100 compras y excluye pendientes y otros meses', () async {
     for (var i = 0; i < 105; i++) {
       await ledger.create(
         TransactionDraft(
@@ -238,7 +238,18 @@ void main() {
       ),
     );
     final month = await repository
-        .watchConfirmedMonth(DateTime(2026, 10))
+        .watchMovements(
+          filter: (
+            search: '',
+            account: null,
+            merchant: null,
+            category: null,
+            type: null,
+            start: DateTime(2026, 10),
+            end: DateTime(2026, 11),
+          ),
+          limit: 200,
+        )
         .first;
     expect(month, hasLength(105));
     expect(month.fold<int>(0, (sum, row) => sum + row.amountMinor), 105000);

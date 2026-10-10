@@ -105,6 +105,60 @@ void main() {
       throwsA(isA<BackupException>()),
     );
   });
+  test('lotes de importación históricos y su movimiento enlazado sobreviven al backup', () async {
+    final account = (await database.select(database.accounts).get()).single.id;
+    final now = DateTime.utc(2026, 10, 4);
+    await database
+        .into(database.importBatches)
+        .insert(
+          ImportBatchesCompanion.insert(
+            id: 'lote-1',
+            fileName: 'histórico.csv',
+            status: 'imported',
+            createdAt: now,
+          ),
+        );
+    final transactionId = await LedgerService(database).create(
+      TransactionDraft(
+        type: TransactionType.expense,
+        amount: const Money(75000),
+        occurredAt: DateTime(2026, 7, 7),
+        fromAccountId: account,
+        source: TransactionSource.csv,
+        sourceReference: 'compra-antigua',
+        importBatchId: 'lote-1',
+      ),
+    );
+    await database
+        .into(database.importRows)
+        .insert(
+          ImportRowsCompanion.insert(
+            id: 'fila-1',
+            batchId: 'lote-1',
+            rowNumber: 1,
+            originalJson: '{}',
+            status: 'valid',
+            transactionId: Value(transactionId),
+          ),
+        );
+    await service.restore(await service.createBytes(password), password);
+    final row = await database.select(database.ledgerTransactions).getSingle();
+    expect(row.importBatchId, 'lote-1');
+    expect(row.source, 'csv');
+    expect(row.sourceReference, 'compra-antigua');
+    expect(
+      (await database.select(database.importBatches).getSingle()).fileName,
+      'histórico.csv',
+    );
+    expect(
+      (await database.select(database.importRows).getSingle()).transactionId,
+      transactionId,
+    );
+    expect(
+      await database.customSelect('PRAGMA foreign_key_check').get(),
+      isEmpty,
+    );
+  });
   test('edited and deleted linked payments remain portable', () async {
     final account = (await database.select(database.accounts).get()).single.id;
     final payments = PendingPaymentService(database);

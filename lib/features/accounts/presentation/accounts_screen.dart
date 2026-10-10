@@ -11,8 +11,9 @@ import '../../../core/money/money.dart';
 import '../../transactions/domain/ledger_models.dart';
 import 'create_account_dialog.dart';
 import '../../transactions/presentation/ledger_actions.dart';
-import '../../transactions/presentation/transactions_screen.dart';
+import '../../transactions/presentation/movement_detail.dart';
 import '../../credit_cards/domain/credit_card_cycle.dart';
+import '../../../shared/widgets/app_fab.dart';
 
 final class AccountsScreen extends ConsumerStatefulWidget {
   const AccountsScreen({this.accountId, super.key});
@@ -165,8 +166,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         },
       ),
       floatingActionButton: widget.accountId == null
-          ? FloatingActionButton(
-              heroTag: null,
+          ? AppFab(
               tooltip: 'Agregar cuenta',
               onPressed: () => _showCreate(context, ref),
               child: const Icon(Icons.add),
@@ -215,12 +215,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         ),
         if (account.type == 'creditCard')
           FutureBuilder<CreditCardProfileRecord?>(
-            future:
-                (ref
-                        .read(databaseProvider)
-                        .select(ref.read(databaseProvider).creditCardProfiles)
-                      ..where((p) => p.accountId.equals(account.id)))
-                    .getSingleOrNull(),
+            future: ref
+                .read(accountsServiceProvider)
+                .creditCardProfile(account.id),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
                 return Text('No se pudo cargar la tarjeta: ${snapshot.error}');
@@ -289,12 +286,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
             },
           ),
         FutureBuilder<List<AccountAliasRecord>>(
-          future:
-              (ref
-                      .read(databaseProvider)
-                      .select(ref.read(databaseProvider).accountAliases)
-                    ..where((a) => a.accountId.equals(account.id)))
-                  .get(),
+          future: ref.read(accountsServiceProvider).aliasesOf(account.id),
           builder: (context, snapshot) => ListTile(
             title: const Text('Alias'),
             subtitle: Text(
@@ -365,13 +357,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
 
   Future<void> _edit(BuildContext context, AccountRecord account) async {
     try {
-      final db = ref.read(databaseProvider);
-      final aliases = await (db.select(
-        db.accountAliases,
-      )..where((t) => t.accountId.equals(account.id))).get();
-      final card = await (db.select(
-        db.creditCardProfiles,
-      )..where((t) => t.accountId.equals(account.id))).getSingleOrNull();
+      final service = ref.read(accountsServiceProvider);
+      final aliases = await service.aliasesOf(account.id);
+      final card = await service.creditCardProfile(account.id);
       if (!context.mounted) return;
       final draft = await showCreateAccountDialog(
         context,

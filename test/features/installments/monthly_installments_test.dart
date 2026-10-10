@@ -60,94 +60,97 @@ void main() {
     monthlyInstallments: true,
   )).first;
 
+  test('día 31 recuperado tras febrero común y bisiesto; enteros exactos', () {
+    for (final year in [2024, 2025]) {
+      final plan = const InstallmentCalculator().schedule(
+        totalMinor: 101,
+        count: 3,
+        firstPeriod: DateTime(year, 1, 31),
+      );
+      expect(plan.map((e) => e.periodStart.day), [
+        31,
+        year == 2024 ? 29 : 28,
+        31,
+      ]);
+      expect(plan.map((e) => e.amountMinor), [33, 33, 35]);
+    }
+  });
   test(
-    'P05: día 31 recuperado tras febrero común y bisiesto; enteros exactos',
-    () {
-      for (final year in [2024, 2025]) {
-        final plan = const InstallmentCalculator().schedule(
-          totalMinor: 101,
-          count: 3,
-          firstPeriod: DateTime(year, 1, 31),
-        );
-        expect(plan.map((e) => e.periodStart.day), [
-          31,
-          year == 2024 ? 29 : 28,
-          31,
-        ]);
-        expect(plan.map((e) => e.amountMinor), [33, 33, 35]);
-      }
+    'deuda completa inmediata y filas mensuales sin duplicar pagos',
+    () async {
+      final id = await create();
+      expect(await ledger.balance(card), 1000000);
+      expect((await report(10)).expenses, 100000);
+      final repo = LedgerRepository(db),
+          rows = await repo
+              .watchMovements(
+                filter: (
+                  search: '100%',
+                  account: null,
+                  merchant: null,
+                  category: null,
+                  type: 'expense',
+                  start: DateTime(2026, 10),
+                  end: DateTime(2027, 8),
+                ),
+              )
+              .first;
+      expect(rows, hasLength(10));
+      expect(
+        rows.every((r) => r.transaction.id == id && r.amountMinor == 100000),
+        isTrue,
+      );
+      expect(rows.map((r) => r.number).toSet(), hasLength(10));
+      expect(await db.select(db.ledgerTransactions).get(), hasLength(1));
+      await ledger.create(
+        TransactionDraft(
+          type: TransactionType.transfer,
+          amount: const Money(100000),
+          occurredAt: DateTime(2026, 10, 6),
+          fromAccountId: bank,
+          toAccountId: card,
+          paymentChannel: PaymentChannel.bankTransfer,
+        ),
+      );
+      expect(await ledger.balance(card), 900000);
+      expect((await report(10)).expenses, 100000);
     },
   );
-  test('P05/F05/F18: deuda completa inmediata y filas mensuales sin duplicar pagos', () async {
-    final id = await create();
-    expect(await ledger.balance(card), 1000000);
-    expect((await report(10)).expenses, 100000);
-    final repo = LedgerRepository(db),
-        rows = await repo
-            .watchMovements(
-              filter: (
-                search: '100%',
-                account: null,
-                merchant: null,
-                category: null,
-                type: 'expense',
-                start: DateTime(2026, 10),
-                end: DateTime(2027, 8),
-              ),
-            )
-            .first;
-    expect(rows, hasLength(10));
-    expect(
-      rows.every((r) => r.transaction.id == id && r.amountMinor == 100000),
-      isTrue,
-    );
-    expect(rows.map((r) => r.number).toSet(), hasLength(10));
-    expect(await db.select(db.ledgerTransactions).get(), hasLength(1));
-    await ledger.create(
-      TransactionDraft(
-        type: TransactionType.transfer,
-        amount: const Money(100000),
-        occurredAt: DateTime(2026, 10, 6),
-        fromAccountId: bank,
-        toAccountId: card,
-        paymentChannel: PaymentChannel.bankTransfer,
-      ),
-    );
-    expect(await ledger.balance(card), 900000);
-    expect((await report(10)).expenses, 100000);
-  });
-  test('P05: diferir primera fecha conserva deuda y filtra cuotas por fecha exacta', () async {
-    await create(first: DateTime(2026, 11, 6));
-    expect(await ledger.balance(card), 1000000);
-    expect((await report(10)).expenses, 0);
-    expect((await report(11)).expenses, 100000);
-    Future<List<MovementRow>> range(int end) =>
-        LedgerRepository(db)
-            .watchMovements(
-              filter: (
-                search: '',
-                account: null,
-                merchant: null,
-                category: null,
-                type: null,
-                start: DateTime(2026, 11, 1),
-                end: DateTime(2026, 11, end),
-              ),
-            )
-            .first;
-    expect(await range(6), isEmpty);
-    final rows = await range(7);
-    expect(rows.single.occurredAt, DateTime(2026, 11, 6));
-    expect(rows.single.planned, isTrue);
-  });
-  test('P05/V01: fallo al adjuntar plan revierte compra y partidas; fecha anterior se rechaza', () async {
+  test(
+    'diferir primera fecha conserva deuda y filtra cuotas por fecha exacta',
+    () async {
+      await create(first: DateTime(2026, 11, 6));
+      expect(await ledger.balance(card), 1000000);
+      expect((await report(10)).expenses, 0);
+      expect((await report(11)).expenses, 100000);
+      Future<List<MovementRow>> range(int end) =>
+          LedgerRepository(db)
+              .watchMovements(
+                filter: (
+                  search: '',
+                  account: null,
+                  merchant: null,
+                  category: null,
+                  type: null,
+                  start: DateTime(2026, 11, 1),
+                  end: DateTime(2026, 11, end),
+                ),
+              )
+              .first;
+      expect(await range(6), isEmpty);
+      final rows = await range(7);
+      expect(rows.single.occurredAt, DateTime(2026, 11, 6));
+      expect(rows.single.planned, isTrue);
+    },
+  );
+  test('fallo al adjuntar plan revierte compra y partidas; fecha anterior se rechaza', () async {
     await expectLater(create(first: DateTime(2026, 10, 5)), throwsException);
     expect(await db.select(db.ledgerTransactions).get(), isEmpty);
     expect(await db.select(db.accountPostings).get(), isEmpty);
     expect(await ledger.balance(card), 0);
   });
   test(
-    'P05: ediciones concurrentes no sobrescriben calendario ni duplican compra',
+    'ediciones concurrentes no sobrescriben calendario ni duplican compra',
     () async {
       final id = await create();
       final original = await db.select(db.ledgerTransactions).getSingle();
@@ -169,7 +172,7 @@ void main() {
       expect((await report(10)).expenses, 0);
     },
   );
-  test('P05/V02: respaldo conserva fechas, referencias y una sola compra; invalida borradores', () async {
+  test('respaldo conserva fechas, referencias y una sola compra; invalida borradores', () async {
     final directory = await Directory.systemTemp.createTemp(
       'cabal-monthly-backup-',
     );
@@ -186,7 +189,7 @@ void main() {
     expect(await ledger.balance(card), 1000000);
   });
   test(
-    'P05: planes históricos mantienen día 1 al editar sin reemplazar fecha',
+    'planes históricos mantienen día 1 al editar sin reemplazar fecha',
     () async {
       final id = await ledger.create(purchase(date: DateTime(2026, 9, 20)));
       await InstallmentService(db).attachPlan(

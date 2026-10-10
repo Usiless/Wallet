@@ -45,6 +45,16 @@ final class MovementRow {
   }
 }
 
+/// Lo que el formulario necesita para editar o clonar un movimiento.
+typedef MovementFormSource = ({
+  TransactionRecord transaction,
+  List<TransactionSplitRecord> splits,
+  InstallmentPlanRecord? plan,
+  MerchantRecord? merchant,
+  List<AccountRecord> accounts,
+  List<CategoryRecord> categories,
+});
+
 final class LedgerRepository {
   LedgerRepository(this.database);
 
@@ -153,140 +163,63 @@ final class LedgerRepository {
         );
   }
 
-  Stream<List<TransactionRecord>> watchTransactions({int limit = 100}) {
-    final query = database.select(database.ledgerTransactions)
-      ..where((table) => table.status.isNotValue('deleted'))
-      ..orderBy([
-        (table) => OrderingTerm.desc(table.occurredAt),
-        (table) => OrderingTerm.desc(table.id),
-      ])
-      ..limit(limit);
-    return query.watch();
+  Future<({InstallmentPlanRecord plan, List<InstallmentEntryRecord> entries})?>
+  installmentsOf(String transactionId) async {
+    final plan = await (database.select(
+      database.installmentPlans,
+    )..where((p) => p.transactionId.equals(transactionId))).getSingleOrNull();
+    if (plan == null) return null;
+    final entries =
+        await (database.select(database.installmentEntries)
+              ..where((e) => e.planId.equals(plan.id))
+              ..orderBy([(e) => OrderingTerm.asc(e.installmentNumber)]))
+            .get();
+    return (plan: plan, entries: entries);
   }
 
-  Stream<List<TransactionRecord>> watchFiltered({
-    required HistoryFilter filter,
-    int limit = 51,
-    bool installmentPeriod = false,
-    bool unclassifiedOnly = false,
-    bool reportOnly = false,
-    bool withoutMerchant = false,
-  }) {
-    final t = database.ledgerTransactions;
-    final query = database.select(t)
-      ..where((t) => t.status.equals('confirmed'));
-    if (reportOnly) {
-      query.where(
-        (t) =>
-            t.currencyCode.equals('PYG') &
-            t.type.isIn(['income', 'expense', 'refund']),
-      );
+  /// Movimiento confirmado con sus divisiones, plan, comercio y las cuentas y
+  /// categorías que referencia (aunque estén archivadas).
+  Future<MovementFormSource> loadForForm(String id) async {
+    final row = await (database.select(
+      database.ledgerTransactions,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    if (row == null || row.status != 'confirmed') {
+      throw StateError('El movimiento ya no está disponible.');
     }
-    if (withoutMerchant) query.where((t) => t.merchantId.isNull());
-    if (filter.account != null) {
-      query.where(
-        (t) =>
-            t.fromAccountId.equals(filter.account!) |
-            t.toAccountId.equals(filter.account!),
-      );
-    }
-    if (filter.merchant != null) {
-      query.where((t) => t.merchantId.equals(filter.merchant!));
-    }
-    if (filter.type != null) {
-      query.where(
-        (t) => filter.type == 'purchases'
-            ? t.type.isIn(['expense', 'refund'])
-            : t.type.equals(filter.type!),
-      );
-    }
-    Expression<bool> originalDates = const Constant(true);
-    if (filter.start != null) {
-      originalDates &= t.occurredAt.isBiggerOrEqualValue(filter.start!.toUtc());
-    }
-    if (filter.end != null) {
-      originalDates &= t.occurredAt.isSmallerThanValue(filter.end!.toUtc());
-    }
-    if (installmentPeriod) {
-      final plans = database.installmentPlans;
-      final entries = database.installmentEntries;
-      final allPlans = database.selectOnly(plans)
-        ..addColumns([plans.transactionId]);
-      final eligibleEntries = database.selectOnly(entries)
-        ..addColumns([entries.planId]);
-      DateTime periodDate(DateTime date) =>
-          DateTime.utc(date.year, date.month, date.day, 12);
-      if (filter.start != null) {
-        eligibleEntries.where(
-          entries.periodStart.isBiggerOrEqualValue(periodDate(filter.start!)),
-        );
-      }
-      if (filter.end != null) {
-        eligibleEntries.where(
-          entries.periodStart.isSmallerThanValue(periodDate(filter.end!)),
-        );
-      }
-      final eligiblePlans = database.selectOnly(plans)
-        ..addColumns([plans.transactionId])
-        ..where(plans.id.isInQuery(eligibleEntries));
-      final plannedExpense =
-          t.type.equals('expense') & t.id.isInQuery(allPlans);
-      query.where(
-        (t) =>
-            (plannedExpense.not() & originalDates) |
-            (t.type.equals('expense') & t.id.isInQuery(eligiblePlans)),
-      );
-    } else {
-      query.where((t) => originalDates);
-    }
-    if (unclassifiedOnly) {
-      final classified = database.selectOnly(database.transactionSplits)
-        ..addColumns([database.transactionSplits.transactionId]);
-      query.where((t) => t.id.isNotInQuery(classified));
-    }
-    if (filter.category != null) {
-      final splits = database.selectOnly(database.transactionSplits)
-        ..addColumns([database.transactionSplits.transactionId])
-        ..where(database.transactionSplits.categoryId.equals(filter.category!));
-      query.where((t) => t.id.isInQuery(splits));
-    }
-    if (filter.search.trim().isNotEmpty) {
-      final escaped = filter.search
-          .trim()
-          .replaceAll('\\', '\\\\')
-          .replaceAll('%', '\\%')
-          .replaceAll('_', '\\_');
-      final names = database.selectOnly(database.merchants)
-        ..addColumns([database.merchants.id])
-        ..where(database.merchants.name.like('%$escaped%', escapeChar: '\\'));
-      query.where(
-        (t) =>
-            t.description.like('%$escaped%', escapeChar: '\\') |
-            t.note.like('%$escaped%', escapeChar: '\\') |
-            t.merchantId.isInQuery(names),
-      );
-    }
-    query.orderBy([
-      (t) => OrderingTerm.desc(t.occurredAt),
-      (t) => OrderingTerm.desc(t.id),
-    ]);
-    query.limit(limit);
-    return query.watch();
+    final splits = await splitsOf(id);
+    final plan = await (database.select(
+      database.installmentPlans,
+    )..where((t) => t.transactionId.equals(id))).getSingleOrNull();
+    final merchantId = row.merchantId;
+    final merchant = merchantId == null
+        ? null
+        : await (database.select(
+            database.merchants,
+          )..where((t) => t.id.equals(merchantId))).getSingleOrNull();
+    final accounts =
+        await (database.select(database.accounts)..where(
+              (t) => t.id.isIn(
+                [row.fromAccountId, row.toAccountId].whereType<String>(),
+              ),
+            ))
+            .get();
+    final categories = await (database.select(
+      database.categories,
+    )..where((t) => t.id.isIn(splits.map((s) => s.categoryId)))).get();
+    return (
+      transaction: row,
+      splits: splits,
+      plan: plan,
+      merchant: merchant,
+      accounts: accounts,
+      categories: categories,
+    );
   }
 
-  Stream<List<TransactionRecord>> watchConfirmedMonth(DateTime month) {
-    final start = DateTime(month.year, month.month).toUtc();
-    final end = DateTime(month.year, month.month + 1).toUtc();
-    return (database.select(database.ledgerTransactions)
-          ..where(
-            (table) =>
-                table.status.equals('confirmed') &
-                table.occurredAt.isBiggerOrEqualValue(start) &
-                table.occurredAt.isSmallerThanValue(end),
-          )
-          ..orderBy([(table) => OrderingTerm.desc(table.occurredAt)]))
-        .watch();
-  }
+  Future<List<TransactionSplitRecord>> splitsOf(String transactionId) =>
+      (database.select(
+        database.transactionSplits,
+      )..where((s) => s.transactionId.equals(transactionId))).get();
 
   Stream<List<AccountBalance>> watchAccountBalances() {
     return database

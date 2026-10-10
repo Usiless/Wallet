@@ -5,14 +5,6 @@ import 'payment_reminder_bridge.dart';
 import 'payment_reminder_scheduler.dart';
 
 /// The native agenda contains notifications only, never financial mutations.
-Future<bool> synchronizePaymentReminders(
-  PaymentReminderBridge bridge,
-  List<PendingPayment> payments, {
-  DateTime? now,
-}) async {
-  return PaymentReminderCoordinator().synchronize(bridge, payments, now: now);
-}
-
 /// Reuses an unchanged foreground agenda; opening/resuming forces a native refresh.
 final class PaymentReminderCoordinator {
   String? _lastSignature;

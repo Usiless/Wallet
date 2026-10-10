@@ -5,16 +5,11 @@ import '../../../core/errors/app_exception.dart';
 import 'installment_calculator.dart';
 
 final class InstallmentService {
-  InstallmentService(
-    this.database, {
-    Uuid? uuid,
-    InstallmentCalculator? calculator,
-  }) : uuid = uuid ?? const Uuid(),
-       calculator = calculator ?? const InstallmentCalculator();
+  InstallmentService(this.database);
 
   final AppDatabase database;
-  final Uuid uuid;
-  final InstallmentCalculator calculator;
+  static const _uuid = Uuid();
+  static const _calculator = InstallmentCalculator();
 
   Future<String> attachPlan({
     required String transactionId,
@@ -47,44 +42,42 @@ final class InstallmentService {
         'La primera cuota debe ser desde la compra.',
       );
     }
-    final schedule = calculator.schedule(
+    final schedule = _calculator.schedule(
       totalMinor: transaction.amountMinor,
       count: count,
       firstPeriod: firstPeriod,
     );
-    final planId = uuid.v4();
+    final planId = _uuid.v4();
     final now = DateTime.now().toUtc();
-    await database.transaction(() async {
-      await database
-          .into(database.installmentPlans)
-          .insert(
-            InstallmentPlansCompanion.insert(
-              id: planId,
-              transactionId: transactionId,
-              totalCommittedMinor: transaction.amountMinor,
-              installmentCount: count,
-              firstPeriod: DateTime.utc(
-                firstPeriod.year,
-                firstPeriod.month,
-                firstPeriod.day,
-                12,
-              ),
-              createdAt: now,
-              updatedAt: now,
+    await database
+        .into(database.installmentPlans)
+        .insert(
+          InstallmentPlansCompanion.insert(
+            id: planId,
+            transactionId: transactionId,
+            totalCommittedMinor: transaction.amountMinor,
+            installmentCount: count,
+            firstPeriod: DateTime.utc(
+              firstPeriod.year,
+              firstPeriod.month,
+              firstPeriod.day,
+              12,
             ),
-          );
-      await database.batch((batch) {
-        batch.insertAll(database.installmentEntries, [
-          for (final item in schedule)
-            InstallmentEntriesCompanion.insert(
-              id: uuid.v4(),
-              planId: planId,
-              installmentNumber: item.number,
-              periodStart: item.periodStart,
-              amountMinor: item.amountMinor,
-            ),
-        ]);
-      });
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+    await database.batch((batch) {
+      batch.insertAll(database.installmentEntries, [
+        for (final item in schedule)
+          InstallmentEntriesCompanion.insert(
+            id: _uuid.v4(),
+            planId: planId,
+            installmentNumber: item.number,
+            periodStart: item.periodStart,
+            amountMinor: item.amountMinor,
+          ),
+      ]);
     });
     return planId;
   });

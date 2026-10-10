@@ -8,7 +8,6 @@ Dependencias directas; versiones registradas en `pubspec.lock`. Los paquetes no 
 | archive | 4.0.9 | MIT |
 | crypto | 3.0.7 | BSD-3-Clause |
 | cryptography | 2.9.0 | Apache-2.0 |
-| csv | 8.0.0 | MIT |
 | drift / drift_dev | 2.34.0 | MIT |
 | file_picker | 13.1.0 | MIT |
 | fl_chart | 1.2.0 | MIT |
@@ -18,12 +17,11 @@ Dependencias directas; versiones registradas en `pubspec.lock`. Los paquetes no 
 | local_auth | 3.0.2 | BSD-3-Clause |
 | path | 1.9.1 | BSD-3-Clause |
 | path_provider | 2.1.6 | BSD-3-Clause |
-| timezone | 0.11.1 | BSD-3-Clause |
 | uuid | 4.6.0 | MIT |
 | sqlite3 | 3.7.0 | MIT (declaración pendiente de revisión de componentes nativos sqlite3mc) |
 | build_runner (desarrollo) | 2.15.1 | BSD-3-Clause (no verificada en esta auditoría) |
 | flutter_lints (desarrollo) | 6.0.0 | BSD-3-Clause (no verificada en esta auditoría) |
-| flutter_localizations / flutter_test / integration_test | SDK | Según SDK; textos no revisados en esta auditoría |
+| flutter_localizations / flutter_test | SDK | Según SDK; textos no revisados en esta auditoría |
 
 Los textos completos se distribuyen en cada paquete del SDK/cache y se incorporan al registro de licencias de Flutter. Antes de publicar una release debe regenerarse/revisarse esta tabla contra `pubspec.lock`, incluyendo dependencias transitivas del artefacto final.
 

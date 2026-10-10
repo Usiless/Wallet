@@ -26,7 +26,7 @@ void main() {
   tearDown(() => db.close());
 
   test(
-    'P02/F17: categoría archivada conserva historia y suspende nuevas copias',
+    'categoría archivada conserva historia y suspende nuevas copias',
     () async {
       final timestamp = DateTime.now().toUtc();
       await db
@@ -67,7 +67,7 @@ void main() {
   );
 
   test(
-    'P02/F17: apertura concurrente crea una vez, sin rellenar meses cerrados',
+    'apertura concurrente crea una vez, sin rellenar meses cerrados',
     () async {
       await create();
       await Future.wait([
@@ -82,41 +82,44 @@ void main() {
     },
   );
 
-  test('P02/F17: editar cambia ese mes y los siguientes de su serie, conserva pasado e IDs', () async {
-    await create();
-    final october = await month(10);
-    await service.ensureCurrentMonth(now: DateTime(2026, 11));
-    final november = await month(11);
-    await service.ensureCurrentMonth(now: DateTime(2026, 12));
-    final december = await month(12);
-    final unrelated = await service.create(
-      name: 'Otro',
-      month: DateTime(2026, 12),
-      targetMinor: 77,
-    );
-    await service.edit(
-      november,
-      name: 'Nuevo nombre',
-      targetMinor: 99999,
-      repeatMonthly: true,
-    );
-    expect(await month(10), october);
-    expect((await month(11)).id, november.id);
-    expect((await month(11)).name, 'Nuevo nombre');
-    final rows = await service.watchBudgets(DateTime(2026, 12)).first;
-    expect(rows.singleWhere((b) => b.id == december.id).targetMinor, 99999);
-    expect(rows.singleWhere((b) => b.id == unrelated).targetMinor, 77);
-    await service.ensureCurrentMonth(now: DateTime(2027, 1));
-    final january =
-        (await service.watchBudgets(DateTime(2027, 1)).first).single;
-    expect(january.name, 'Nuevo nombre');
-    expect(january.targetMinor, 99999);
-    await service.ensureCurrentMonth(now: DateTime(2026, 11));
-    expect(await db.select(db.budgets).get(), hasLength(5));
-  });
+  test(
+    'editar cambia ese mes y los siguientes de su serie, conserva pasado e IDs',
+    () async {
+      await create();
+      final october = await month(10);
+      await service.ensureCurrentMonth(now: DateTime(2026, 11));
+      final november = await month(11);
+      await service.ensureCurrentMonth(now: DateTime(2026, 12));
+      final december = await month(12);
+      final unrelated = await service.create(
+        name: 'Otro',
+        month: DateTime(2026, 12),
+        targetMinor: 77,
+      );
+      await service.edit(
+        november,
+        name: 'Nuevo nombre',
+        targetMinor: 99999,
+        repeatMonthly: true,
+      );
+      expect(await month(10), october);
+      expect((await month(11)).id, november.id);
+      expect((await month(11)).name, 'Nuevo nombre');
+      final rows = await service.watchBudgets(DateTime(2026, 12)).first;
+      expect(rows.singleWhere((b) => b.id == december.id).targetMinor, 99999);
+      expect(rows.singleWhere((b) => b.id == unrelated).targetMinor, 77);
+      await service.ensureCurrentMonth(now: DateTime(2027, 1));
+      final january =
+          (await service.watchBudgets(DateTime(2027, 1)).first).single;
+      expect(january.name, 'Nuevo nombre');
+      expect(january.targetMinor, 99999);
+      await service.ensureCurrentMonth(now: DateTime(2026, 11));
+      expect(await db.select(db.budgets).get(), hasLength(5));
+    },
+  );
 
   test(
-    'P02/F17: pausar repetición conserva meses existentes y no crea próximos',
+    'pausar repetición conserva meses existentes y no crea próximos',
     () async {
       await create();
       await service.ensureCurrentMonth(now: DateTime(2026, 11));
@@ -134,69 +137,69 @@ void main() {
     },
   );
 
-  test('P02/V02: conflicto concurrente y borrador anterior a restauración no escriben', () async {
-    await create();
-    final original = await month(10);
-    final results = await Future.wait([
-      for (final name in ['Uno', 'Dos'])
-        service
-            .edit(original, name: name, targetMinor: 30, repeatMonthly: true)
-            .then<Object?>((_) => null, onError: (Object e) => e),
-    ]);
-    expect(results.whereType<ValidationException>(), hasLength(1));
-    final updated = await month(10);
-    final generation = db.restoreGeneration;
-    db.restoreGeneration++;
-    await expectLater(
-      service.edit(
-        updated,
-        name: 'Obsoleto',
-        targetMinor: 1,
-        repeatMonthly: true,
-        expectedBookGeneration: generation,
-      ),
-      throwsA(isA<ValidationException>()),
-    );
-    await expectLater(
-      service.create(
-        name: 'Obsoleto',
-        month: DateTime(2026, 10),
-        targetMinor: 1,
-        expectedBookGeneration: generation,
-      ),
-      throwsA(isA<ValidationException>()),
-    );
-    expect(await month(10), updated);
-  });
-
   test(
-    'P02/V02: fallo de plantilla revierte edición y alta completas',
+    'conflicto concurrente y borrador anterior a restauración no escriben',
     () async {
       await create();
-      await service.ensureCurrentMonth(now: DateTime(2026, 11));
-      final before = await db.select(db.budgets).get();
-      await db.customStatement(
-        "CREATE TRIGGER fail_template BEFORE INSERT ON app_settings BEGIN SELECT RAISE(ABORT, 'fallo ficticio'); END",
-      );
+      final original = await month(10);
+      final results = await Future.wait([
+        for (final name in ['Uno', 'Dos'])
+          service
+              .edit(original, name: name, targetMinor: 30, repeatMonthly: true)
+              .then<Object?>((_) => null, onError: (Object e) => e),
+      ]);
+      expect(results.whereType<ValidationException>(), hasLength(1));
+      final updated = await month(10);
+      final generation = db.restoreGeneration;
+      db.restoreGeneration++;
       await expectLater(
         service.edit(
-          await month(10),
-          name: 'No guardar',
+          updated,
+          name: 'Obsoleto',
           targetMinor: 1,
           repeatMonthly: true,
+          expectedBookGeneration: generation,
         ),
-        throwsA(anything),
+        throwsA(isA<ValidationException>()),
       );
-      await expectLater(create(), throwsA(anything));
-      expect(await db.select(db.budgets).get(), before);
-      await db.customStatement('DROP TRIGGER fail_template');
-      await service.ensureCurrentMonth(now: DateTime(2026, 12));
-      expect((await month(12)).targetMinor, 100001);
+      await expectLater(
+        service.create(
+          name: 'Obsoleto',
+          month: DateTime(2026, 10),
+          targetMinor: 1,
+          expectedBookGeneration: generation,
+        ),
+        throwsA(isA<ValidationException>()),
+      );
+      expect(await month(10), updated);
     },
   );
 
+  test('fallo de plantilla revierte edición y alta completas', () async {
+    await create();
+    await service.ensureCurrentMonth(now: DateTime(2026, 11));
+    final before = await db.select(db.budgets).get();
+    await db.customStatement(
+      "CREATE TRIGGER fail_template BEFORE INSERT ON app_settings BEGIN SELECT RAISE(ABORT, 'fallo ficticio'); END",
+    );
+    await expectLater(
+      service.edit(
+        await month(10),
+        name: 'No guardar',
+        targetMinor: 1,
+        repeatMonthly: true,
+      ),
+      throwsA(anything),
+    );
+    await expectLater(create(), throwsA(anything));
+    expect(await db.select(db.budgets).get(), before);
+    await db.customStatement('DROP TRIGGER fail_template');
+    await service.ensureCurrentMonth(now: DateTime(2026, 12));
+    expect((await month(12)).targetMinor, 100001);
+  });
+
   test(
-    'P02/V02: backup cifrado conserva serie, pausa e idempotencia al restaurar',
+    'backup cifrado conserva serie, pausa e idempotencia al restaurar',
     () async {
       final dir = await Directory.systemTemp.createTemp('cabal-monthly-test-');
       addTearDown(() => dir.delete(recursive: true));
