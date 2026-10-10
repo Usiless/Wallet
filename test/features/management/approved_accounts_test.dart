@@ -11,7 +11,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
-  testWidgets('P01/F10: filtrar cuentas y pagar la segunda desde su ficha', (
+  testWidgets('filtrar cuentas y pagar la segunda desde su ficha', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(320, 900);

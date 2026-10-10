@@ -8,11 +8,9 @@ import 'package:finanzas_locales/features/onboarding/presentation/onboarding_scr
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:timezone/data/latest.dart' as tz;
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
-  tz.initializeTimeZones();
 
   testWidgets('muestra onboarding cuando todavía no fue completado', (
     tester,

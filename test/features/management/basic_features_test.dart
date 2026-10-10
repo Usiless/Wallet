@@ -323,7 +323,7 @@ void main() {
       );
       final repo = LedgerRepository(db);
       final rows = await repo
-          .watchFiltered(
+          .watchMovements(
             filter: (
               search: 'ecop',
               account: bank,
@@ -335,10 +335,10 @@ void main() {
             ),
           )
           .first;
-      expect(rows.map((r) => r.id), [id]);
+      expect(rows.map((r) => r.transaction.id), [id]);
       expect(
         await repo
-            .watchFiltered(
+            .watchMovements(
               filter: (
                 search: '%',
                 account: null,

@@ -1,3 +1,4 @@
+import '../../../core/money/allocation.dart';
 import '../../transactions/domain/ledger_models.dart';
 
 final class PaymentReminderSettings {
@@ -91,14 +92,12 @@ final class PendingPayment {
     result.removeWhere((_, amount) => amount <= 0);
     final total = result.values.fold<int>(0, (sum, amount) => sum + amount);
     if (total != remainingMinor && total > 0) {
-      var allocated = 0;
       final keys = result.keys.toList();
+      final amounts = allocateLastRemainder(remainingMinor, [
+        for (final key in keys) result[key]!,
+      ], total: total);
       for (var i = 0; i < keys.length; i++) {
-        final amount = i == keys.length - 1
-            ? remainingMinor - allocated
-            : remainingMinor * result[keys[i]]! ~/ total;
-        result[keys[i]] = amount;
-        allocated += amount;
+        result[keys[i]] = amounts[i];
       }
       result.removeWhere((_, amount) => amount <= 0);
     }

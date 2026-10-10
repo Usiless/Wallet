@@ -24,7 +24,7 @@ Ciclo de vida Flutter / captura visible → procesar cola → procesar programad
 - [Core](../lib/core): base, dinero, seguridad, backup y notificaciones.
 - [Features](../lib/features): pantallas/servicios financieros, plantillas y herramientas de desarrollo separadas.
 - [Android Kotlin](../android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales): listener, cola, puente y `DeviceCrypto`.
-- [Pruebas](../test) y [smoke de integración](../integration_test/app_smoke_test.dart): evidencias limitadas al entorno ejecutado.
+- [Pruebas](../test): evidencias limitadas al entorno ejecutado.
 - [Prototipo](../prototype/cabal): libro ficticio JS/localStorage; no conecta con Flutter ni prueba Android.
 
 ## Persistencia y recuperación

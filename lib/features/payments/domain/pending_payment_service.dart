@@ -4,6 +4,7 @@ import 'package:drift/drift.dart';
 import 'package:uuid/uuid.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/money/allocation.dart';
 import '../../../core/money/money.dart';
 import '../../transactions/data/ledger_service.dart';
 import '../../installments/domain/installment_calculator.dart';
@@ -302,19 +303,15 @@ final class PendingPaymentService {
       next = following.first;
     }
     final residual = p.remainingSplits;
-    var allocated = 0;
-    final portions = <SplitDraft>[];
     final keys = residual.keys.toList();
-    for (var i = 0; i < keys.length; i++) {
-      final key = keys[i];
-      final part = i == keys.length - 1
-          ? amountMinor - allocated
-          : amountMinor * residual[key]! ~/ p.remainingMinor;
-      allocated += part;
-      if (part > 0) {
-        portions.add(SplitDraft(categoryId: key, amountMinor: part));
-      }
-    }
+    final parts = allocateLastRemainder(amountMinor, [
+      for (final key in keys) residual[key]!,
+    ], total: p.remainingMinor);
+    final portions = [
+      for (var i = 0; i < keys.length; i++)
+        if (parts[i] > 0)
+          SplitDraft(categoryId: keys[i], amountMinor: parts[i]),
+    ];
     final payingAccount = await (database.select(
       database.accounts,
     )..where((a) => a.id.equals(accountId))).getSingle();
@@ -458,12 +455,11 @@ final class PendingPaymentService {
       q.data['splits'] = parts;
       q.data['amountMinor'] = amountMinor;
       final offset = q.installmentNumber - p.installmentNumber;
-      final month = DateTime(dueDate.year, dueDate.month + offset, 1);
-      final last = DateTime(month.year, month.month + 1, 0).day;
+      final due = monthlyAnchorDate(dueDate, offset);
       q.data['dueDate'] = DateTime(
-        month.year,
-        month.month,
-        dueDate.day > last ? last : dueDate.day,
+        due.year,
+        due.month,
+        due.day,
       ).toIso8601String();
       if (accountId != null) q.data['accountId'] = accountId;
       q.data['revision'] = q.revision + 1;

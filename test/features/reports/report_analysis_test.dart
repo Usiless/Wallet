@@ -301,22 +301,13 @@ void main() {
     );
     final repo = LedgerRepository(db);
     expect(
-      (await repo
-              .watchFiltered(
-                filter: filter,
-                installmentPeriod: true,
-                reportOnly: true,
-              )
-              .first)
-          .map((t) => t.id),
-      [id],
-    );
-    expect(
-      await repo.watchFiltered(filter: filter, reportOnly: true).first,
-      isEmpty,
+      (await repo.watchMovements(filter: filter, reportOnly: true).first).map(
+        (m) => (m.transaction.id, m.number, m.quotaMinor),
+      ),
+      [(id, 2, 300)],
     );
     final unclassified = await repo
-        .watchFiltered(
+        .watchMovements(
           filter: (
             search: '',
             account: null,

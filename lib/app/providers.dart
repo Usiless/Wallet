@@ -116,9 +116,6 @@ final accountsProvider = StreamProvider<List<AccountRecord>>((ref) {
 final categoriesProvider = StreamProvider<List<CategoryRecord>>((ref) {
   return ref.watch(categoryServiceProvider).watchCategories();
 });
-final transactionsProvider = StreamProvider<List<TransactionRecord>>((ref) {
-  return ref.watch(ledgerRepositoryProvider).watchTransactions();
-});
 final accountBalancesProvider = StreamProvider<List<AccountBalance>>((ref) {
   return ref.watch(ledgerRepositoryProvider).watchAccountBalances();
 });
@@ -128,62 +125,16 @@ final pendingCandidatesProvider = StreamProvider<List<PaymentCandidateRecord>>((
   return ref.watch(notificationIngestionProvider).watchPending();
 });
 
-final monthlyTransactionsProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, DateTime>((ref, month) {
-      return ref.watch(ledgerRepositoryProvider).watchConfirmedMonth(month);
-    });
-
-final historyTransactionsProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, int>((ref, limit) {
-      return ref
-          .watch(ledgerRepositoryProvider)
-          .watchTransactions(limit: limit);
-    });
-
 final allAccountsProvider = StreamProvider<List<AccountRecord>>(
   (ref) =>
       ref.watch(accountsServiceProvider).watchAccounts(includeArchived: true),
 );
-
-final filteredHistoryProvider = StreamProvider.autoDispose
-    .family<List<TransactionRecord>, ({HistoryFilter filter, int limit})>(
-      (ref, request) => ref
-          .watch(ledgerRepositoryProvider)
-          .watchFiltered(filter: request.filter, limit: request.limit),
-    );
 
 final allCategoriesProvider = StreamProvider<List<CategoryRecord>>(
   (ref) =>
       ref.watch(categoryServiceProvider).watchCategories(includeArchived: true),
 );
 
-final reportHistoryProvider = StreamProvider.autoDispose
-    .family<
-      List<TransactionRecord>,
-      ({
-        HistoryFilter filter,
-        int limit,
-        bool quotaPeriod,
-        bool unclassified,
-        bool reportOnly,
-        bool withoutMerchant,
-      })
-    >(
-      (ref, request) => ref
-          .watch(ledgerRepositoryProvider)
-          .watchFiltered(
-            filter: request.filter,
-            limit: request.limit,
-            installmentPeriod: request.quotaPeriod,
-            unclassifiedOnly: request.unclassified,
-            reportOnly: request.reportOnly,
-            withoutMerchant: request.withoutMerchant,
-          ),
-    );
-
-final movementsProvider = StreamProvider<List<MovementRow>>(
-  (ref) => ref.watch(ledgerRepositoryProvider).watchMovements(),
-);
 final movementHistoryProvider = StreamProvider.autoDispose
     .family<
       List<MovementRow>,

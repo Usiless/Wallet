@@ -53,15 +53,6 @@ final class NativeNotificationBridge {
     });
   }
 
-  Future<List<NotificationEnvelope>> drainEnvelopes() async {
-    final values =
-        await _channel.invokeListMethod<Object?>('drainEnvelopes') ?? const [];
-    return values
-        .whereType<Map<Object?, Object?>>()
-        .map(NotificationEnvelope.fromMap)
-        .toList(growable: false);
-  }
-
   Future<List<NotificationEnvelope>> queuedEnvelopes() async {
     final values =
         await _channel.invokeListMethod<Object?>('queuedEnvelopes') ?? const [];

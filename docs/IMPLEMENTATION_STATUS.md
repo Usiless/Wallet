@@ -20,7 +20,7 @@ Implementado: `NotificationListenerService` Kotlin, permisos/configuración, col
 
 ## Fase 4 — CSV
 
-Implementado: plantilla, UTF-8/BOM, detección/cambio de delimitador, preview, filas rechazadas, mapeo, categorías nuevas, huellas, importación parcial transaccional, lote reversible, exportación CSV y JSON. Archivos: `features/imports`, `assets/plantilla_movimientos.csv`. Migración: lotes/filas v1. Pruebas: válidos, formatos erróneos, duplicados, reversión y round-trip básico.
+Implementado: plantilla, UTF-8/BOM, detección/cambio de delimitador, preview, filas rechazadas, mapeo, categorías nuevas, huellas, importación parcial transaccional, lote reversible, exportación CSV y JSON. Código retirado el 2026-10-10 (ver [CSV_FORMAT](CSV_FORMAT.md)). Migración: lotes/filas v1. Pruebas: válidos, formatos erróneos, duplicados, reversión y round-trip básico.
 
 ## Fase 5 — backup, seguridad y reportes
 

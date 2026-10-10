@@ -39,19 +39,19 @@ void main() {
     'conserva identidad de avisos transcurridos al cambiar otro pago',
     () async {
       final bridge = PaymentReminderBridge(channel: channel);
-      await synchronizePaymentReminders(bridge, [
+      await PaymentReminderCoordinator().synchronize(bridge, [
         payment('active'),
         payment('other'),
       ], now: DateTime(2026, 10, 6));
       final initial = ((calls.last.arguments as Map)['requests'] as List)
           .where((r) => (r as Map)['obligationId'] == 'active')
           .toList();
-      await synchronizePaymentReminders(bridge, [
+      await PaymentReminderCoordinator().synchronize(bridge, [
         payment('active'),
         payment('other', paid: 100000),
       ], now: DateTime(2026, 10, 11));
       expect((calls.last.arguments as Map)['requests'], initial);
-      await synchronizePaymentReminders(bridge, [
+      await PaymentReminderCoordinator().synchronize(bridge, [
         payment('active', paid: 100000),
       ], now: DateTime(2026, 10, 11));
       expect((calls.last.arguments as Map)['requests'], isEmpty);
@@ -65,7 +65,7 @@ void main() {
       invalid.data['reminders'] = const PaymentReminderSettings(daysBefore: 61)
           .toJson();
       expect(
-        await synchronizePaymentReminders(bridge, [
+        await PaymentReminderCoordinator().synchronize(bridge, [
           invalid,
           payment('valid'),
           payment('paid', paid: 100000),
@@ -84,7 +84,7 @@ void main() {
     'agenda solo pendiente y reemplaza con vacío tras saldar o restaurar',
     () async {
       final bridge = PaymentReminderBridge(channel: channel);
-      await synchronizePaymentReminders(bridge, [
+      await PaymentReminderCoordinator().synchronize(bridge, [
         payment('active'),
         payment('paid', paid: 100000),
         payment('cancelled', cancelled: true),
@@ -100,7 +100,11 @@ void main() {
         '2026-10-10T09:00:00.000',
       ]);
       calls.clear();
-      await synchronizePaymentReminders(bridge, [], now: DateTime(2026, 10, 6));
+      await PaymentReminderCoordinator().synchronize(
+        bridge,
+        [],
+        now: DateTime(2026, 10, 6),
+      );
       expect((calls.single.arguments as Map)['requests'], isEmpty);
     },
   );

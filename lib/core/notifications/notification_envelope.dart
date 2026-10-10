@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import '../text/normalization.dart';
 
 final class NotificationEnvelope {
@@ -103,7 +101,4 @@ final class NotificationEnvelope {
       'isTest': isTest,
     };
   }
-
-  String toSanitizedJson() =>
-      const JsonEncoder.withIndent('  ').convert(toMap(sanitized: true));
 }

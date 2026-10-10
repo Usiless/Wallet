@@ -8,11 +8,6 @@ import '../../../core/money/money.dart';
 import '../../../shared/widgets/money_text.dart';
 import '../data/report_service.dart';
 
-final reportProvider = StreamProvider.autoDispose
-    .family<ReportTotals, ReportRequest>(
-      (ref, request) =>
-          ReportService(ref.watch(databaseProvider)).watch(request),
-    );
 final reportAnalysisProvider = StreamProvider.autoDispose
     .family<ReportAnalysis, AnalysisRequest>(
       (ref, request) =>

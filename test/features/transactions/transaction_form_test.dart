@@ -28,7 +28,7 @@ Future<void> openDetails(WidgetTester tester) async {
 }
 
 void main() {
-  testWidgets('P01: volver conserva borrador hasta confirmar descarte', (
+  testWidgets('volver conserva borrador hasta confirmar descarte', (
     tester,
   ) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -91,7 +91,7 @@ void main() {
     router.dispose();
     await tester.pump(const Duration(milliseconds: 1));
   });
-  testWidgets('V02: restaurar invalida borrador antes de crear datos', (
+  testWidgets('restaurar invalida borrador antes de crear datos', (
     tester,
   ) async {
     final database = AppDatabase.forTesting(NativeDatabase.memory());

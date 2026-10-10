@@ -50,7 +50,6 @@ void main() {
                   ),
               ]),
             ),
-            transactionsProvider.overrideWith((ref) => Stream.value([])),
             pendingCandidatesProvider.overrideWith((ref) => Stream.value([])),
           ],
         );

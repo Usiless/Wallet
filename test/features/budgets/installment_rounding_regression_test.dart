@@ -10,7 +10,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   test(
-    'H01: presupuestos por categoría conservan 51/50 en cuotas 33/33/35',
+    'presupuestos por categoría conservan 51/50 en cuotas 33/33/35',
     () async {
       final database = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(database.close);
