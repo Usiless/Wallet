@@ -9,12 +9,13 @@ import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../../shared/widgets/text_prompt_dialog.dart';
 import '../../merchants/merchant_autocomplete.dart';
-import '../../payments/presentation/payment_reminder_fields.dart';
 import '../../templates/save_template_dialog.dart';
 import '../../templates/template_picker_sheet.dart';
 import '../data/transaction_form_service.dart';
 import '../domain/ledger_models.dart';
 import '../domain/payment_channel_policy.dart';
+import 'transaction_form_details.dart';
+import 'transaction_form_fields.dart';
 import 'transaction_form_notifier.dart';
 import 'transaction_form_state.dart';
 
@@ -192,7 +193,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                 _typeSelector(state),
                 const SizedBox(height: 16),
                 if (state.needsFrom)
-                  _AccountField(
+                  AccountField(
                     label: 'Cuenta de origen',
                     value: state.from,
                     accounts: accounts,
@@ -201,7 +202,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                 if (state.needsFrom && state.needsTo)
                   const SizedBox(height: 12),
                 if (state.needsTo)
-                  _AccountField(
+                  AccountField(
                     label: 'Cuenta de destino',
                     value: state.to,
                     accounts: accounts,
@@ -211,7 +212,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                 if (state.type != TransactionType.transfer) ...[
                   const SizedBox(height: 12),
                   if (!state.splitEnabled)
-                    _CategoryDropdown(
+                    CategoryDropdown(
                       identity: ('category', state.type, state.category),
                       categories: available,
                       value: state.category,
@@ -229,7 +230,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                   ),
                   if (state.splitEnabled) ...[
                     for (final split in state.splits)
-                      _SplitRow(
+                      SplitRow(
                         key: ValueKey(split.id),
                         split: split,
                         type: state.type,
@@ -264,7 +265,14 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                     ),
                 ],
                 const SizedBox(height: 8),
-                ..._details(context, state, accounts, channels),
+                TransactionFormDetails(
+                  state: state,
+                  accounts: accounts,
+                  channels: channels,
+                  viewModel: _vm,
+                  note: _note,
+                  onPickDate: _pickDate,
+                ),
                 if (!widget.editTemplate && widget.editId == null)
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
@@ -368,142 +376,6 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
           ? null
           : (value) => onChange(value.first),
     );
-  }
-
-  /// «Más detalles»: cuándo se paga, cuotas, repetición, fecha, canal y nota.
-  List<Widget> _details(
-    BuildContext context,
-    TransactionFormState state,
-    List<AccountRecord> accounts,
-    List<PaymentChannel> channels,
-  ) {
-    final open = state.advanced || state.payLater || state.installments;
-    final credit = state.isCreditExpense(accounts);
-    final installmentsOn = state.installmentsOn(accounts);
-    final pendingOn = state.pendingOn(accounts);
-    final when = state.installments
-        ? 'installments'
-        : state.payLater
-        ? 'later'
-        : 'now';
-    return [
-      TextButton.icon(
-        onPressed: state.payLater || state.installments
-            ? null
-            : _vm.toggleAdvanced,
-        icon: Icon(open ? Icons.expand_less : Icons.tune),
-        label: Text(open ? 'Ocultar detalles' : 'Más detalles'),
-      ),
-      if (open) ...[
-        if (state.type == TransactionType.expense &&
-            (widget.editId == null || credit))
-          DropdownButtonFormField<String>(
-            key: ValueKey(('when', credit, when)),
-            isExpanded: true,
-            initialValue: when,
-            decoration: const InputDecoration(labelText: 'Cuándo'),
-            items: [
-              const DropdownMenuItem(value: 'now', child: Text('Ahora')),
-              if (!credit)
-                const DropdownMenuItem(
-                  value: 'later',
-                  child: Text('Pagar después'),
-                ),
-              const DropdownMenuItem(
-                value: 'installments',
-                child: Text('En cuotas'),
-              ),
-            ],
-            onChanged: (value) => _vm.setWhen(value ?? 'now'),
-          ),
-        if (installmentsOn)
-          DropdownButtonFormField<int>(
-            isExpanded: true,
-            initialValue: state.installmentCount,
-            decoration: const InputDecoration(labelText: 'Cantidad de cuotas'),
-            items: [
-              for (var count = 2; count <= 120; count++)
-                DropdownMenuItem(
-                  value: count,
-                  child: Text(
-                    '$count cuotas',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-            onChanged: (value) => _vm.setInstallmentCount(value ?? 2),
-          ),
-        if (pendingOn && !state.installments)
-          DropdownButtonFormField<String?>(
-            key: ValueKey(state.repeat),
-            initialValue: state.repeat,
-            isExpanded: true,
-            decoration: const InputDecoration(labelText: 'Repetir'),
-            items: const [
-              DropdownMenuItem(value: null, child: Text('No repetir')),
-              DropdownMenuItem(value: 'monthly', child: Text('Mensual')),
-              DropdownMenuItem(value: 'yearly', child: Text('Anual')),
-            ],
-            onChanged: _vm.setRepeat,
-          ),
-        if ((installmentsOn || pendingOn) && !widget.editTemplate)
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(installmentsOn ? 'Primera cuota' : 'Fecha de pago'),
-            subtitle: Text(
-              MaterialLocalizations.of(
-                context,
-              ).formatShortDate(state.firstInstallmentDate ?? state.occurredAt),
-            ),
-            trailing: const Icon(Icons.calendar_month_outlined),
-            onTap: () async {
-              final picked = await showDatePicker(
-                context: context,
-                initialDate: state.firstInstallmentDate ?? state.occurredAt,
-                firstDate: DateTime(2000),
-                lastDate: DateTime(2100),
-              );
-              if (picked != null && mounted) {
-                _vm.setFirstInstallmentDate(picked);
-              }
-            },
-          ),
-        if (pendingOn)
-          PaymentReminderFields(
-            value: state.reminders,
-            onChanged: _vm.setReminders,
-          ),
-        ListTile(
-          contentPadding: EdgeInsets.zero,
-          leading: const Icon(Icons.calendar_today),
-          title: const Text('Fecha'),
-          subtitle: Text(
-            '${state.occurredAt.day}/${state.occurredAt.month}/${state.occurredAt.year}',
-          ),
-          onTap: _pickDate,
-        ),
-        DropdownButtonFormField<PaymentChannel>(
-          key: ValueKey(state.channel),
-          initialValue: state.channel,
-          decoration: const InputDecoration(labelText: 'Canal'),
-          items: [
-            for (final channel in channels)
-              DropdownMenuItem(
-                value: channel,
-                child: Text(_channelLabel(channel)),
-              ),
-          ],
-          onChanged: (value) => _vm.setChannel(value ?? state.channel),
-        ),
-        const SizedBox(height: 12),
-        TextFormField(
-          controller: _note,
-          maxLines: 2,
-          decoration: const InputDecoration(labelText: 'Nota'),
-        ),
-      ],
-    ];
   }
 
   // --- acciones que necesitan el contexto ---
@@ -659,170 +531,9 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     }
   }
 
-  String _channelLabel(PaymentChannel channel) => switch (channel) {
-    PaymentChannel.cash => 'Efectivo',
-    PaymentChannel.physicalCard => 'Tarjeta física',
-    PaymentChannel.debitCard => 'Tarjeta de débito',
-    PaymentChannel.physicalCreditCard => 'Tarjeta de crédito física',
-    PaymentChannel.googleWalletContactless => 'Google Wallet',
-    PaymentChannel.onlineCard => 'Pago online',
-    PaymentChannel.bankTransfer => 'Transferencia',
-    PaymentChannel.other => 'Otro',
-  };
-
   void _message(String text) {
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
     }
   }
-}
-
-final class _AccountField extends StatelessWidget {
-  const _AccountField({
-    required this.label,
-    required this.value,
-    required this.accounts,
-    required this.onChanged,
-    this.excludedId,
-  });
-
-  final String label;
-  final String? value;
-  final List<AccountRecord> accounts;
-  final ValueChanged<String?> onChanged;
-  final String? excludedId;
-
-  @override
-  Widget build(BuildContext context) => DropdownButtonFormField<String>(
-    key: ValueKey((
-      label,
-      value,
-      excludedId,
-      accounts.map((row) => row.id).join(','),
-    )),
-    initialValue: accounts.any((row) => row.id == value && row.id != excludedId)
-        ? value
-        : null,
-    decoration: InputDecoration(labelText: label),
-    items: [
-      for (final account in accounts.where(
-        (account) => account.id != excludedId,
-      ))
-        DropdownMenuItem(value: account.id, child: Text(account.name)),
-    ],
-    onChanged: onChanged,
-  );
-}
-
-final class _CategoryDropdown extends StatelessWidget {
-  const _CategoryDropdown({
-    required this.identity,
-    required this.categories,
-    required this.value,
-    required this.onChanged,
-    this.onCreate,
-    this.expanded = false,
-  });
-
-  /// Cambia cuando debe reconstruirse el campo con otro valor inicial.
-  final Object identity;
-  final List<CategoryRecord> categories;
-  final String? value;
-  final ValueChanged<String?> onChanged;
-  final VoidCallback? onCreate;
-  final bool expanded;
-
-  @override
-  Widget build(BuildContext context) => DropdownButtonFormField<String>(
-    key: ValueKey((identity, categories.map((row) => row.id).join(','))),
-    isExpanded: expanded,
-    initialValue: categories.any((row) => row.id == value) ? value : null,
-    decoration: InputDecoration(
-      labelText: 'Categoría',
-      suffixIcon: onCreate == null
-          ? null
-          : IconButton(
-              tooltip: 'Crear categoría',
-              onPressed: onCreate,
-              icon: const Icon(Icons.add),
-            ),
-    ),
-    items: [
-      for (final category in categories)
-        DropdownMenuItem(
-          value: category.id,
-          child: Text(category.name, overflow: TextOverflow.ellipsis),
-        ),
-    ],
-    onChanged: onChanged,
-  );
-}
-
-/// Una fila de la división: categoría e importe. El importe vive en su propio
-/// campo y se copia al estado al escribir.
-class _SplitRow extends StatefulWidget {
-  const _SplitRow({
-    required this.split,
-    required this.type,
-    required this.categories,
-    required this.canRemove,
-    required this.onCategory,
-    required this.onAmount,
-    required this.onRemove,
-    super.key,
-  });
-
-  final SplitEntry split;
-  final TransactionType type;
-  final List<CategoryRecord> categories;
-  final bool canRemove;
-  final ValueChanged<String?> onCategory;
-  final ValueChanged<String> onAmount;
-  final VoidCallback onRemove;
-
-  @override
-  State<_SplitRow> createState() => _SplitRowState();
-}
-
-class _SplitRowState extends State<_SplitRow> {
-  late final _amount = TextEditingController(text: widget.split.amountText);
-
-  @override
-  void dispose() {
-    _amount.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Row(
-      children: [
-        Expanded(
-          child: _CategoryDropdown(
-            identity: (widget.split.id, widget.type, widget.split.categoryId),
-            categories: widget.categories,
-            value: widget.split.categoryId,
-            expanded: true,
-            onChanged: widget.onCategory,
-          ),
-        ),
-        const SizedBox(width: 8),
-        Expanded(
-          child: TextFormField(
-            controller: _amount,
-            inputFormatters: [PygInputFormatter()],
-            keyboardType: TextInputType.number,
-            decoration: const InputDecoration(labelText: 'Importe'),
-            onChanged: widget.onAmount,
-          ),
-        ),
-        IconButton(
-          tooltip: 'Quitar división',
-          onPressed: widget.canRemove ? widget.onRemove : null,
-          icon: const Icon(Icons.remove_circle_outline),
-        ),
-      ],
-    ),
-  );
 }
