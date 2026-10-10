@@ -1,0 +1,269 @@
+--- before/model.js
++++ after/model.js
+@@ -112,10 +112,10 @@
+       installmentSchedule(t).map((item,index)=>({...clone(t),amount:item.amount,date:item.date,splits:item.parts,installmentIndex:index+1,purchaseId:t.id,planned:item.date>TODAY})):[clone(t)]
+     ).filter(t=>!until||t.date<=until);
+   }
+-  function periodAmount(t,start,end,mode='quotas',category='') {
++  function periodAmount(t,start,end,mode='quotas',category='',unclassified=false) {
+     if(!['expense','income','refund'].includes(t.type)||t.deleted)return 0;
+     const impacts=mode==='quotas'&&t.type==='expense'&&t.quotas>1?installmentSchedule(t):[{date:t.date,parts:parts(t)}];
+-    return impacts.filter(i=>i.date>=start&&i.date<=end).reduce((sum,i)=>sum+i.parts.filter(p=>!category||p.category===category).reduce((n,p)=>n+p.amount,0),0);
++    return impacts.filter(i=>i.date>=start&&i.date<=end).reduce((sum,i)=>sum+i.parts.filter(p=>unclassified?!p.category:!category||p.category===category).reduce((n,p)=>n+p.amount,0),0);
+   }
+   const matchingMerchants=(data,name,archived=false)=>data.merchants.filter(m=>(archived||!m.archived)&&(normalize(m.name)===normalize(name)||(m.aliases||[]).some(a=>normalize(a)===normalize(name))));
+   function cardDates(a,date=TODAY) {
+@@ -240,13 +240,13 @@
+       let loops=0;
+       while(template.next<=horizon&&loops++<120) {
+         const key=template.id+'@'+template.next;
+-        if(data.scheduleRuns.includes(key)){advance(template);continue;}
++        if(data.scheduleRuns.includes(key)||(data.obligations||[]).some(o=>o.templateId===template.id&&o.due===template.next)){if(!data.scheduleRuns.includes(key))data.scheduleRuns.push(key);advance(template);continue;}
+         const same=data.transactions.some(t=>!t.deleted&&t.type==='expense'&&t.from===template.from&&normalize(t.merchant)===normalize(template.merchant)&&t.amount===template.amount&&Math.abs(new Date(t.date)-new Date(template.next))<=3*86400000);
+         const pending=data.pending.some(p=>!p.ignored&&!p.confirmed&&p.from===template.from&&normalize(p.merchant)===normalize(template.merchant)&&p.amount===template.amount&&Math.abs(new Date(p.date)-new Date(template.next))<=3*86400000);
+         if(same||pending){template.pending='Posible coincidencia. Revisá antes de preparar otro pendiente.';break;}
+         try {
+           validateTemplate(data,template);
+-          data.obligations.push({id:key,templateId:template.id,frequency:template.frequency,name:template.name,merchant:template.merchant,category:template.category,from:template.from,amount:template.amount,due:template.next,reminder:clone(template.reminder||defaultReminder())});
++          data.obligations.push({id:key,templateId:template.id,frequency:template.frequency,name:template.name,merchant:template.merchant,category:template.category,splits:clone(template.splits||[]),from:template.from,amount:template.amount,due:template.next,reminder:clone(template.reminder||defaultReminder())});
+           data.scheduleRuns.push(key);advance(template);count++;
+         } catch(error){template.pending=error.message;break;}
+       }
+@@ -256,7 +256,63 @@
+   const obligationPayments=(data,id)=>activeTransactions(data).filter(t=>t.obligationId===id);
+   function obligationRemaining(data,o){return o.cancelled?0:Math.max(0,o.amount+(o.carryIn||0)-(o.carryOut||0)-obligationPayments(data,o.id).reduce((s,t)=>s+t.amount,0));}
+   function obligationDebt(data){return (data.obligations||[]).filter(o=>o.planId||o.due<=TODAY).reduce((s,o)=>s+obligationRemaining(data,o),0);}
+-  function pendingAmount(data,start,end,filters={}){return (data.obligations||[]).filter(o=>o.due>=start&&o.due<=end&&(!filters.category||o.category===filters.category)&&(!filters.account||o.from===filters.account)).reduce((s,o)=>s+obligationRemaining(data,o),0);}
++  function obligationParts(data,o){
++    if(o.cancelled)return [];
++    const totals=new Map();
++    const add=(rows,sign=1)=>{for(const p of rows)totals.set(p.category,(totals.get(p.category)||0)+sign*p.amount);};
++    add(parts(o));
++    add(o.carryInParts||[{category:o.category||'',amount:o.carryIn||0}]);
++    for(const tx of obligationPayments(data,o.id))add(parts(tx),-1);
++    add(o.carryOutParts||[{category:o.category||'',amount:o.carryOut||0}],-1);
++    return [...totals].filter(([,amount])=>amount>0).map(([category,amount])=>({category,amount}));
++  }
++  function pendingAmount(data,start,end,filters={}){return (data.obligations||[]).filter(o=>o.due>=start&&o.due<=end&&(!filters.account||o.from===filters.account)).reduce((s,o)=>s+obligationParts(data,o).filter(p=>!filters.category||p.category===filters.category).reduce((sum,p)=>sum+p.amount,0),0);}
++  function nextTemplateDate(data,t){return (data.obligations||[]).filter(o=>o.templateId===t.id&&!o.cancelled&&o.due>=month(TODAY)+'-01'&&obligationRemaining(data,o)>0&&!obligationPayments(data,o.id).length&&!o.carryIn&&!o.carryOut).sort((a,b)=>a.due.localeCompare(b.due))[0]?.due||t.next;}
++  // Reconcilia la edición con los compromisos proyectados en una sola operación.
++  function saveTemplate(data,draft,effectiveDate){
++    const work=clone(data);validateTemplate(work,draft);
++    const index=work.templates.findIndex(t=>t.id===draft.id),old=work.templates[index],t=clone(draft);
++    if(old&&t.schedule){
++      const cutoff=effectiveDate||nextTemplateDate(work,old),dateChanged=t.next!==cutoff||t.frequency!==old.frequency;
++      const editable=(work.obligations||[]).filter(o=>o.templateId===t.id&&o.due>=cutoff&&o.due>=month(TODAY)+'-01'&&!o.cancelled&&!obligationPayments(work,o.id).length&&!o.carryIn&&!o.carryOut).sort((a,b)=>a.due.localeCompare(b.due));
++      const oldFrequency=old.frequency==='yearly'?12:1,newFrequency=t.frequency==='yearly'?12:1;
++      for(const o of editable){
++        if(dateChanged){const offset=(Number(o.due.slice(0,4))-Number(cutoff.slice(0,4)))*12+Number(o.due.slice(5,7))-Number(cutoff.slice(5,7));const key=t.id+'@'+o.due;work.scheduleRuns=work.scheduleRuns.filter(k=>k!==key);o.due=addMonths(t.next,Math.max(0,Math.round(offset/oldFrequency))*newFrequency);}
++        o.amount=t.amount;o.from=t.from;o.category=t.category;o.splits=clone(t.splits||[]);o.name=t.name;o.merchant=t.merchant;o.frequency=t.frequency;o.reminder=clone(t.reminder||defaultReminder());
++      }
++      const dates=(work.obligations||[]).filter(o=>o.templateId===t.id).map(o=>o.due);
++      if(new Set(dates).size!==dates.length)throw Error('La fecha coincide con otro vencimiento. Elegí una fecha diferente.');
++      for(const o of editable){const key=t.id+'@'+o.due;if(!work.scheduleRuns.includes(key))work.scheduleRuns.push(key);}
++      if(dateChanged){t.anchor=t.next;const last=dates.filter(d=>d>=cutoff).sort().at(-1);while(last&&t.next<=last)advance(t);}else{t.next=old.next;t.anchor=old.anchor||old.next;}
++    }
++    if(index<0)work.templates.push(t);else work.templates[index]=t;
++    processSchedules(work);Object.assign(data,work);return t;
++  }
++  function saveReminder(data,id,reminder){
++    const o=(data.obligations||[]).find(n=>n.id===id);
++    if(!o)throw Error('El pendiente ya no está disponible.');
++    for(const n of data.obligations)if(n.id===id||n.due>=o.due&&(o.planId?n.planId===o.planId:n.templateId===o.templateId)&&obligationRemaining(data,n)>0)n.reminder=clone(reminder);
++    const t=data.templates.find(t=>t.id===o.templateId);if(t)t.reminder=clone(reminder);
++  }
++  function editObligation(data,id,draft){
++    const work=clone(data),o=(work.obligations||[]).find(n=>n.id===id),{amount,due,following}=draft;
++    if(!o||o.cancelled)throw Error('El pendiente ya no está disponible.');
++    if(!Number.isSafeInteger(amount)||amount<=0||!validDate(due))throw Error('Ingresá un importe positivo y una fecha válida.');
++    if(obligationPayments(work,id).length||o.carryIn||o.carryOut)throw Error('Este pendiente tiene pagos o saldos trasladados. Confirmá el saldo restante para conservar el historial.');
++    const oldDue=o.due,scale=n=>{if(n.splits?.length){const values=allocate(amount,n.splits.map(p=>p.amount));n.splits=n.splits.map((p,i)=>({...p,amount:values[i]})).filter(p=>p.amount>0);}n.amount=amount;};
++    const targets=work.obligations.filter(n=>n.id===id||following&&n.due>=oldDue&&(o.planId?n.planId===o.planId:n.templateId===o.templateId));
++    for(const n of targets)if(!n.cancelled&&!obligationPayments(work,n.id).length&&!n.carryIn&&!n.carryOut){
++      const offset=(Number(n.due.slice(0,4))-Number(oldDue.slice(0,4)))*12+Number(n.due.slice(5,7))-Number(oldDue.slice(5,7));
++      // El vencimiento viejo sigue consumido: editar una sola ocurrencia no debe regenerarlo.
++      scale(n);if(due!==oldDue)n.due=addMonths(due,offset);
++      if(n.templateId){const key=n.templateId+'@'+n.due;if(!work.scheduleRuns.includes(key))work.scheduleRuns.push(key);}
++    }
++    const group=work.obligations.filter(n=>o.planId?n.planId===o.planId:n.templateId===o.templateId);
++    if(new Set(group.map(n=>n.due)).size!==group.length)throw Error('La fecha coincide con otro vencimiento. Elegí una fecha diferente.');
++    const t=work.templates.find(t=>t.id===o.templateId);
++    if(t&&following){scale(t);if(due!==oldDue){t.anchor=due;t.next=addMonths(due,Math.max(t.frequency==='yearly'?12:1,(Number(t.next.slice(0,4))-Number(oldDue.slice(0,4)))*12+Number(t.next.slice(5,7))-Number(oldDue.slice(5,7))));}validateTemplate(work,t);}
++    Object.assign(data,work);
++  }
+   const availableMoney=data=>data.accounts.filter(a=>!a.archived&&a.type!=='credit'&&a.available).reduce((sum,a)=>sum+balance(data,a.id),0);
+   function createPlan(data,draft){
+     if(!String(draft.name||'').trim())throw Error('Escribí qué compraste.');
+@@ -274,19 +330,21 @@
+     if(!o||o.cancelled)throw Error('El pendiente ya no está disponible.');
+     if(payment.finalAmount&&o.templateId&&!o.carryIn&&!o.carryOut&&!obligationPayments(work,id).length){
+       if(!Number.isSafeInteger(payment.amount)||payment.amount<=0)throw Error('Ingresá un importe positivo.');
++      if(o.splits?.length){const values=allocate(payment.amount,o.splits.map(p=>p.amount));o.splits=o.splits.map((p,i)=>({...p,amount:values[i]})).filter(p=>p.amount>0);}
+       o.amount=payment.amount;
+     }
+     const remaining=obligationRemaining(work,o);
+     if(!Number.isSafeInteger(payment.amount)||payment.amount<=0||payment.amount>remaining)throw Error('El pago debe ser positivo y no superar el saldo pendiente.');
+     const a=account(work,payment.from);if(!a||a.archived||o.planId&&a.type==='credit')throw Error('Elegí una cuenta activa de débito, efectivo o ahorro.');
+-    const tx=save(work,{type:'expense',amount:payment.amount,date:payment.date,from:payment.from,to:'',merchant:o.merchant||o.name,category:o.category||'',quotas:1,splits:[],channel:channels('expense',a)[0],source:'Pago confirmado',note:o.planId?'Cuota '+o.index+'/'+o.count:'Gasto recurrente',obligationId:o.id});
++    const allocation=obligationParts(work,o),values=allocate(payment.amount,allocation.map(p=>p.amount)),paidParts=allocation.map((p,i)=>({...p,amount:values[i]})).filter(p=>p.amount>0);
++    const tx=save(work,{type:'expense',amount:payment.amount,date:payment.date,from:payment.from,to:'',merchant:o.merchant||o.name,category:paidParts.length===1?paidParts[0].category:o.category||'',quotas:1,splits:o.splits?.length||paidParts.length>1?paidParts:[],channel:channels('expense',a)[0],source:'Pago confirmado',note:o.planId?'Cuota '+o.index+'/'+o.count:'Gasto recurrente',obligationId:o.id});
+     const template=work.templates.find(t=>t.id===o.templateId);
+     if(template){template.from=payment.from;template.channel=channels('expense',a).includes(template.channel)?template.channel:channels('expense',a)[0];}
+     if(payment.carry&&payment.amount<remaining&&template&&!work.obligations.some(n=>n.templateId===o.templateId&&n.due>o.due&&!n.cancelled&&obligationRemaining(work,n)>0)){
+       const key=template.id+'@'+template.next;
+       if(!work.scheduleRuns.includes(key)){
+         validateTemplate(work,template);
+-        work.obligations.push({id:key,templateId:template.id,frequency:template.frequency,name:template.name,merchant:template.merchant,category:template.category,from:payment.from,amount:template.amount,due:template.next,reminder:clone(template.reminder||defaultReminder())});
++        work.obligations.push({id:key,templateId:template.id,frequency:template.frequency,name:template.name,merchant:template.merchant,category:template.category,splits:clone(template.splits||[]),from:payment.from,amount:template.amount,due:template.next,reminder:clone(template.reminder||defaultReminder())});
+         work.scheduleRuns.push(key);advance(template);
+       }
+     }
+@@ -294,7 +352,7 @@
+     for(const n of group)if(n.due>=o.due)n.from=payment.from;
+     const rest=remaining-payment.amount;
+     const next=group.filter(n=>!n.cancelled&&n.due>o.due&&obligationRemaining(work,n)>0).sort((a,b)=>a.due.localeCompare(b.due))[0];
+-    if(rest&&payment.carry&&next){o.carryOut=(o.carryOut||0)+rest;next.carryIn=(next.carryIn||0)+rest;(next.carriedFrom||=[]).push({id:o.id,due:o.due,amount:rest});}
++    if(rest&&payment.carry&&next){const carried=obligationParts(work,o);o.carryOutParts=[...(o.carryOutParts||[]),...clone(carried)];next.carryInParts=[...(next.carryInParts||[{category:next.category||'',amount:next.carryIn||0}]),...clone(carried)];o.carryOut=(o.carryOut||0)+rest;next.carryIn=(next.carryIn||0)+rest;(next.carriedFrom||=[]).push({id:o.id,due:o.due,amount:rest,parts:clone(carried)});}
+     Object.assign(data,work);return tx;
+   }
+   function advance(template) {
+@@ -325,6 +383,6 @@
+     for(const t of restored.transactions)t.revision=Math.max(t.revision||0,current.transactions.find(old=>old.id===t.id)?.revision||0)+1;
+     return restored;
+   }
+-  const api={TODAY,clone,uid,month,money,parseMoney,normalize,addMonths,seed,activeTransactions,account,balance,netWorth,channels,parts,periodAmount,report,validate,save,refundable,refund,deleteTransaction,restoreTransaction,processSchedules,advance,allocate,installmentStart,installmentSchedule,movementRows,matchingMerchants,cardDates,validateTemplate,saveWithTemplate,validDate,ingestWallet,budgetProgress,createBudget,restoreBook,defaultReminder,obligationPayments,obligationRemaining,obligationDebt,pendingAmount,availableMoney,createPlan,payObligation};
++  const api={TODAY,clone,uid,month,money,parseMoney,normalize,addMonths,seed,activeTransactions,account,balance,netWorth,channels,parts,periodAmount,report,validate,save,refundable,refund,deleteTransaction,restoreTransaction,processSchedules,advance,allocate,installmentStart,installmentSchedule,movementRows,matchingMerchants,cardDates,validateTemplate,saveWithTemplate,validDate,ingestWallet,budgetProgress,createBudget,restoreBook,defaultReminder,obligationPayments,obligationRemaining,obligationDebt,pendingAmount,availableMoney,createPlan,payObligation,obligationParts,saveTemplate,nextTemplateDate,saveReminder,editObligation};
+   if(typeof module!=='undefined'&&module.exports)module.exports=api;root.Cabal=api;
+ })(typeof window!=='undefined'?window:globalThis);
+--- before/app.js
++++ after/app.js
+@@ -106,11 +106,11 @@
+     return `<div class="report-toolbar">${periodControls()}${button(icon('filter'),'report-filters','','secondary',`aria-label="Filtros del reporte${activeFilters?' ('+activeFilters+' activo'+(activeFilters===1?'':'s')+')':''}" title="Filtros"`)}</div><div class="report-view-row single-view"><select id="report-view" aria-label="Vista del reporte">${['Resumen','Evolución','Categorías','Comercios','Cuentas'].map(name=>`<option ${ui.reportView===name?'selected':''}>${name}</option>`).join('')}</select></div>${ui.reportView==='Resumen'?reportSummary(r,prev,prevStart):ui.reportView==='Evolución'?evolution(start,end):rankings(r,ui.reportView)}${ui.reportView==='Resumen'?'':`<details class="inline"><summary>Detalle de los datos</summary><p class="helper">Gastos del período y cuotas en sus fechas. Devoluciones en su fecha real. Sin transferencias, pagos de tarjeta ni ajustes. Porcentajes sobre gasto bruto.</p></details>`}`;}
+ 
+   function evolution(start,end){const first=ui.reportStart?start.slice(0,7):M.addMonths(ui.month+'-01',-5).slice(0,7),last=ui.reportStart?end.slice(0,7):ui.month;const months=[];for(let m=first;m<=last&&months.length<120;m=M.addMonths(m+'-01',1).slice(0,7)){const r=M.report(data,m===start.slice(0,7)?start:m+'-01',m===end.slice(0,7)?end:lastDay(m),'quotas',{account:ui.reportAccount,category:ui.reportCategory});months.push({month:m,...r});}const max=Math.max(...months.map(r=>Math.max(Math.abs(r.net),r.income)),1);return `<div class="chart">${months.map(r=>`<div class="bar-group" title="${monthLabel(r.month)}: gasto neto ${M.money(r.net)}, ingreso ${M.money(r.income)}"><div class="bar ${r.net<0?'negative':''}" style="height:${Math.abs(r.net)/max*100}%"></div><div class="bar light" style="height:${r.income/max*100}%"></div><span class="bar-label">${r.month.slice(5)}</span></div>`).join('')}</div><div class="legend"><span><i></i>Gasto neto</span><span><i class="light"></i>Ingresos</span></div>${months.map(r=>`<button class="row" data-action="evolution-history" data-id="${r.month}"><span class="grow"><strong>${monthLabel(r.month)}</strong><small>Ingreso ${M.money(r.income)} · Devolución ${M.money(r.refunds)}</small></span><span class="money">${M.money(r.net)}</span>${icon('arrow')}</button>`).join('')}`;}
+-  function rankings(r,kind){const [start,end]=reportPeriod();let groups;if(kind==='Categorías'){groups=[...data.categories.filter(c=>c.kind!=='income').map(c=>({id:c.id,name:c.name,filter:'category'})),{id:'',name:'Sin categoría',filter:'category'}];}else if(kind==='Cuentas'){groups=data.accounts.map(a=>({id:a.id,name:a.name,filter:'account'}));}else{groups=[...new Set(r.rows.filter(row=>row.transaction.type!=='income').map(row=>row.transaction.merchant||''))].map(name=>({id:name,name:name||'Sin comercio',filter:'merchant'}));}if(kind==='Categorías'&&ui.reportCategory)groups=groups.filter(g=>g.id===ui.reportCategory);const results=groups.map(g=>{let exp=0,refund=0;for(const row of r.rows){const t=row.transaction;if(t.type==='income')continue;let amount=row.amount;if(g.filter==='category'){amount=M.parts(t).some(p=>p.category===g.id)?M.periodAmount(t,start,end,'quotas',g.id):0;if(!g.id){const unclassified=M.parts(t).filter(p=>!p.category);amount=unclassified.length?M.periodAmount({...t,splits:unclassified},start,end,'quotas'):0;}}else if(g.filter==='account'&&t.from!==g.id&&t.to!==g.id)continue;else if(g.filter==='merchant'&&(t.merchant||'')!==g.id)continue;if(t.type==='expense')exp+=amount;else if(t.type==='refund')refund+=amount;}return {...g,exp,refund};}).filter(g=>g.exp||g.refund).sort((a,b)=>b.exp-a.exp);return results.length?results.map(g=>`<button class="row" data-action="ranking-history" data-id="${esc(g.id)}" data-filter="${g.filter}"><span class="grow"><strong>${esc(g.name)}</strong><small>Bruto ${M.money(g.exp)} · ${r.expenses?Math.round(g.exp/r.expenses*100):0}%<br>Devolución ${M.money(g.refund)}</small></span><span class="money">${M.money(g.exp-g.refund)}</span>${icon('arrow')}</button>`).join(''):empty('Sin datos para este desglose','Cambiá el período o los filtros.');}
++  function rankings(r,kind){const [start,end]=reportPeriod();let groups;if(kind==='Categorías'){groups=[...data.categories.filter(c=>c.kind!=='income').map(c=>({id:c.id,name:c.name,filter:'category'})),{id:'',name:'Sin categoría',filter:'category'}];}else if(kind==='Cuentas'){groups=data.accounts.map(a=>({id:a.id,name:a.name,filter:'account'}));}else{groups=[...new Set(r.rows.filter(row=>row.transaction.type!=='income').map(row=>row.transaction.merchant||''))].map(name=>({id:name,name:name||'Sin comercio',filter:'merchant'}));}if(kind==='Categorías'&&ui.reportCategory)groups=groups.filter(g=>g.id===ui.reportCategory);const results=groups.map(g=>{let exp=0,refund=0;for(const row of r.rows){const t=row.transaction;if(t.type==='income')continue;let amount=row.amount;if(g.filter==='category'){amount=M.parts(t).some(p=>p.category===g.id)?M.periodAmount(t,start,end,'quotas',g.id):0;if(!g.id){const unclassified=M.parts(t).filter(p=>!p.category);amount=unclassified.length?M.periodAmount(t,start,end,'quotas','',true):0;}}else if(g.filter==='account'&&t.from!==g.id&&t.to!==g.id)continue;else if(g.filter==='merchant'&&(t.merchant||'')!==g.id)continue;if(t.type==='expense')exp+=amount;else if(t.type==='refund')refund+=amount;}return {...g,exp,refund};}).filter(g=>g.exp||g.refund).sort((a,b)=>b.exp-a.exp);return results.length?results.map(g=>`<button class="row" data-action="ranking-history" data-id="${esc(g.id)}" data-filter="${g.filter}"><span class="grow"><strong>${esc(g.name)}</strong><small>Bruto ${M.money(g.exp)} · ${r.expenses?Math.round(g.exp/r.expenses*100):0}%<br>Devolución ${M.money(g.refund)}</small></span><span class="money">${M.money(g.exp-g.refund)}</span>${icon('arrow')}</button>`).join(''):empty('Sin datos para este desglose','Cambiá el período o los filtros.');}
+   const menuRow=(name,subtitle,page,i)=>`<button class="row" data-action="go" data-id="${page}"><span class="round-icon">${icon(i)}</span><span class="grow"><strong>${name}</strong>${subtitle?`<small>${subtitle}</small>`:''}</span>${icon('arrow')}</button>`;
+   function more(){return header('Más')+`<section class="content"><div class="mini-title">ORGANIZACIÓN</div>${menuRow('Pagos pendientes','Cuotas, vencimientos y recordatorios','payments','calendar')}${menuRow('Plantillas','Gastos mensuales y anuales','templates','template')}${menuRow('Google Wallet','','wallet','card')}<div class="mini-title">TUS DATOS</div>${menuRow('Comercios, categorías y asociaciones','','catalog','store')}${menuRow('Backup cifrado','','backup','shield')}<div class="mini-title">SEGURIDAD E INFORMACIÓN</div>${menuRow('Bloqueo del dispositivo','','security','lock')}${menuRow('Información de la aplicación','','info','info')}${data.scenario==='developer'?`<div class="mini-title">DESARROLLO HABILITADO</div>${menuRow('Herramientas de desarrollo','','developer','test')}`:''}<p class="helper" style="text-align:center;margin-top:28px">Cabal · Prototipo</p></section>`;}
+   function inbox(){return header('Compras por revisar','',`<button class="icon-button" data-action="wallet-refresh" aria-label="Actualizar propuestas">${icon('refresh')}</button>`)+`<section class="content">${pending().map(p=>`<div class="card"><div class="row"><span class="round-icon">${icon('card')}</span><span class="grow"><strong>${esc(p.merchant)}</strong><small>${dateLabel(p.date)} · ${esc(p.alias)}</small></span><span class="money">${M.money(p.amount)}</span></div><p class="helper">${esc(p.reason)}</p><div class="tag-line"><span class="chip ${p.from?'':'warn'}">${p.from?'Cuenta reconocida':'Cuenta por asociar'}</span><span class="chip">${p.merchantState||(M.matchingMerchants(data,p.merchant).length===1?'Comercio reconocido':M.matchingMerchants(data,p.merchant).length>1?'Comercio ambiguo':'Comercio nuevo')}</span>${p.duplicate?'<span class="chip warn">Posible coincidencia</span>':''}</div><div class="actions">${button('Revisar','review',p.id,'primary')}${button('Descartar','discard',p.id)}</div></div>`).join('')||empty('Todo revisado','Las compras pendientes aparecerán acá. Hasta registrarlas no afectan tus saldos.')}<p class="helper">Descartar no registra un gasto ni borra la notificación de Android. Captura y actualización simuladas.</p></section>`;}
+-  function templates(){const scheduled=view.page==='scheduled';const rows=data.templates.filter(t=>!scheduled||t.schedule||t.paused||t.pending);return header('Plantillas','',`<button class="icon-button" data-action="template-new" aria-label="Crear plantilla">${icon('plus')}</button>`)+`<section class="content">${scheduled?`<p class="notice">La programación prepara pagos pendientes. Confirmá cada pago para afectar el saldo.</p>${button('Ver pagos pendientes','go','payments','','')}`:''}<div class="tabs">${button('Todas','template-view','templates',scheduled?'secondary':'primary active')}${button('Programadas','template-view','scheduled',scheduled?'primary active':'secondary')}</div>${rows.map(t=>`<div class="card"><h3>${esc(t.name)}</h3><p class="helper">${typeLabels[t.type]} · ${t.amount?M.money(t.amount):'Importe a completar'} · ${esc(aName(t.from||t.to))}</p>${t.schedule?`<span class="chip ${t.pending?'warn':''}">${t.paused?'Pausada':t.pending?'Pendiente':'Activa'} · ${t.frequency==='yearly'?'Anual':'Mensual'}</span><p class="helper">Próxima fecha: ${dateLabel(t.next)}</p>`:'<span class="chip">Uso manual</span>'}${t.pending?`<p class="notice">${esc(t.pending)}</p>`:''}<div class="actions">${button('Usar','template-use',t.id,'primary')}${button('Editar','template-edit',t.id)}${button('Eliminar','template-delete',t.id)}</div>${t.schedule?`<div class="actions">${button(t.paused?'Reactivar':'Pausar','template-pause',t.id)}${t.pending?button('Omitir vencimiento','template-skip',t.id):''}</div>`:''}</div>`).join('')||empty(scheduled?'Sin programación':'Sin plantillas','Creá una plantilla con tus datos habituales.',button('Crear plantilla','template-new'))}</section>`;}
++  function templates(){const scheduled=view.page==='scheduled';const rows=data.templates.filter(t=>!scheduled||t.schedule||t.paused||t.pending);return header('Plantillas','',`<button class="icon-button" data-action="template-new" aria-label="Crear plantilla">${icon('plus')}</button>`)+`<section class="content">${scheduled?`<p class="notice">La programación prepara pagos pendientes. Confirmá cada pago para afectar el saldo.</p>${button('Ver pagos pendientes','go','payments','','')}`:''}<div class="tabs">${button('Todas','template-view','templates',scheduled?'secondary':'primary active')}${button('Programadas','template-view','scheduled',scheduled?'primary active':'secondary')}</div>${rows.map(t=>`<div class="card"><h3>${esc(t.name)}</h3><p class="helper">${typeLabels[t.type]} · ${t.amount?M.money(t.amount):'Importe a completar'} · ${esc(aName(t.from||t.to))}</p>${t.schedule?`<span class="chip ${t.pending?'warn':''}">${t.paused?'Pausada':t.pending?'Pendiente':'Activa'} · ${t.frequency==='yearly'?'Anual':'Mensual'}</span><p class="helper">Próxima fecha: ${dateLabel(M.nextTemplateDate(data,t))}</p>`:'<span class="chip">Uso manual</span>'}${t.pending?`<p class="notice">${esc(t.pending)}</p>`:''}<div class="actions">${button('Usar','template-use',t.id,'primary')}${button('Editar','template-edit',t.id)}${button('Eliminar','template-delete',t.id)}</div>${t.schedule?`<div class="actions">${button(t.paused?'Reactivar':'Pausar','template-pause',t.id)}${t.pending?button('Omitir vencimiento','template-skip',t.id):''}</div>`:''}</div>`).join('')||empty(scheduled?'Sin programación':'Sin plantillas','Creá una plantilla con tus datos habituales.',button('Crear plantilla','template-new'))}</section>`;}
+   function switchRow(title,help,key,value,disabled=false){return `<label class="switch-row"><div><strong>${title}</strong><p>${help}</p></div><input class="switch" type="checkbox" data-setting="${key}" aria-label="${esc(title)}" ${value?'checked':''} ${disabled?'disabled':''}></label>`;}
+   function wallet(){return header('Google Wallet')+`<section class="content"><div class="notice">${icon('shield')}<span>Acceso amplio a notificaciones de Android. Cabal filtra Wallet y Google Play Services.</span></div>${switchRow('Detectar compras','La captura se procesa al abrir o volver a la app.','wallet',data.settings.wallet)}${dataLine('Acceso Android',data.settings.permission?'Concedido (simulado)':'Sin permiso')}${button('Abrir ajustes de Android','permission','','secondary full')}${switchRow('Registrar compras reconocidas','Requiere detección y permiso activos, importe válido y cuenta activa/comercio únicos. Las compras nuevas o dudosas quedan por revisar.','auto',data.settings.auto)}${button('Simular compra reconocida','simulate-wallet','known','primary full')}${button('Simular comercio nuevo','simulate-wallet','new','secondary full')}${button('Simular comercio por alias','simulate-wallet','alias','secondary full')}${button('Simular actualización de la última captura','simulate-wallet','updated','secondary full')}${button('Ir a compras por revisar','go','inbox','secondary full')}<p class="helper">Compras ficticias. Sin avisos del sistema ni registros con Cabal cerrada.</p></section>`;}
+   function catalog(){const kind=ui.catalog;let rows=kind==='merchants'?data.merchants:kind==='categories'?data.categories:kind==='accountAliases'?data.accounts.flatMap(a=>a.aliases.map(alias=>({id:a.id,name:alias,target:a.name}))):data.merchants.flatMap(m=>m.aliases.map(alias=>({id:m.id,name:alias,target:m.name})));return header('Administrar datos','',`<button class="icon-button" data-action="catalog-add" aria-label="Agregar elemento">${icon('plus')}</button>`)+`<section class="content"><select id="catalog-kind" aria-label="Tipo de catálogo">${[['merchants','Comercios'],['categories','Categorías'],['accountAliases','Alias de cuentas'],['merchantAliases','Alias de comercios']].map(([id,name])=>`<option value="${id}" ${id===kind?'selected':''}>${name}</option>`).join('')}</select>${rows.map(r=>`<div class="card"><div class="row"><span class="grow"><strong>${esc(r.name)}</strong><small>${esc(r.target||r.kind||'Comercio')}${r.archived?' · Archivado':''}${kind==='accountAliases'&&data.accounts.filter(a=>!a.archived&&a.aliases.some(alias=>M.normalize(alias)===M.normalize(r.name))).length>1?' · Conflicto':''}</small></span>${kind==='merchants'?`<button class="text-button" data-action="merchant-history" data-id="${esc(r.name)}">Historial</button>`:''}</div><div class="actions">${button(r.target?'Reasignar':'Renombrar','catalog-edit',r.id,'secondary',`data-name="${esc(r.name)}"`)}${button(r.target?'Eliminar alias':r.archived?'Reactivar':'Archivar',r.target?'alias-delete':'catalog-archive',r.id,'secondary',`data-name="${esc(r.name)}"`)}</div></div>`).join('')||empty('Sin elementos','Agregá un nombre o una asociación.')}</section>`;}
+@@ -216,14 +216,14 @@
+     case 'report-history':reportHistory();break;case 'evolution-history':reportHistory(null,null,id);break;case 'ranking-history':reportHistory(el.dataset.filter,id);break;
+     case 'budget-new':openModal('Crear presupuesto',form('budget',`${field('Nombre','name','Mi mes')}${field('Objetivo PYG','amount','','text','inputmode="numeric"')}${selectField('Categoría','category',categoryOptions('','expense',true))}<p class="notice">Se creará para ${monthLabel(M.month(M.TODAY))}, aunque estés consultando otro mes.</p>`,'Crear'));break;
+     case 'template-new':composer({amount:null},{template:true});break;
+-    case 'template-picker':{const current=$('#modal-form').elements.type.value;const sorted=[...data.templates].sort((a,b)=>Number(b.type===current)-Number(a.type===current));openModal('Usar plantilla',`<p class="helper">Primero se muestran las de este tipo; las demás siguen disponibles.</p>${sorted.map(t=>`<button class="row" data-action="template-use" data-id="${t.id}"><span class="grow"><strong>${esc(t.name)}</strong><small>${typeLabels[t.type]} · ${t.amount?M.money(t.amount):'Completar importe'}${t.schedule?' · '+(t.paused?'Pausada':t.pending?'Pendiente':dateLabel(t.next)):''}</small></span>${icon('arrow')}</button>`).join('')||'<p class="muted">Todavía no hay plantillas.</p>'}${button('Administrar plantillas','template-manage','','secondary full')}`);break;}
++    case 'template-picker':{const current=$('#modal-form').elements.type.value;const sorted=[...data.templates].sort((a,b)=>Number(b.type===current)-Number(a.type===current));openModal('Usar plantilla',`<p class="helper">Primero se muestran las de este tipo; las demás siguen disponibles.</p>${sorted.map(t=>`<button class="row" data-action="template-use" data-id="${t.id}"><span class="grow"><strong>${esc(t.name)}</strong><small>${typeLabels[t.type]} · ${t.amount?M.money(t.amount):'Completar importe'}${t.schedule?' · '+(t.paused?'Pausada':t.pending?'Pendiente':dateLabel(M.nextTemplateDate(data,t))):''}</small></span>${icon('arrow')}</button>`).join('')||'<p class="muted">Todavía no hay plantillas.</p>'}${button('Administrar plantillas','template-manage','','secondary full')}`);break;}
+     case 'template-manage':close(true);go('templates');break;
+-    case 'template-edit':composer(data.templates.find(t=>t.id===id),{template:true,templateId:id});break;
++    case 'template-edit':{const t=M.clone(data.templates.find(t=>t.id===id));t.next=M.nextTemplateDate(data,t);composer(t,{template:true,templateId:id});break;}
+     case 'template-use':{const t=M.clone(data.templates.find(t=>t.id===id));delete t.id;delete t.firstInstallmentDate;delete t.firstPeriod;t.date=M.TODAY;t.source='Manual';composer(t);break;}
+     case 'template-delete':confirmAction('Eliminar plantilla','No modifica los movimientos ya registrados. Podés deshacer.','template-delete-confirm',id);break;
+     case 'template-delete-confirm':{const t=M.clone(data.templates.find(t=>t.id===id));data.templates=data.templates.filter(t=>t.id!==id);close(true);render();notify('Plantilla eliminada.',()=>{data.templates.push(t);render();});break;}
+     case 'template-pause':{const t=data.templates.find(t=>t.id===id);if(t.paused){composer(t,{template:true,templateId:id});}else{t.paused=true;render();notify('Programación pausada.');}break;}
+-    case 'template-skip':{const t=data.templates.find(t=>t.id===id);confirmAction('Omitir vencimiento',`No se registrará el gasto del ${dateLabel(t.next)}. Se avanzará a la siguiente fecha.`, 'template-skip-confirm',id);break;}
++    case 'template-skip':{const t=data.templates.find(t=>t.id===id);confirmAction('Omitir vencimiento',`No se registrará el gasto del ${dateLabel(M.nextTemplateDate(data,t))}. Se avanzará a la siguiente fecha.`, 'template-skip-confirm',id);break;}
+     case 'template-skip-confirm':{const t=data.templates.find(t=>t.id===id);data.scheduleRuns.push(t.id+'@'+t.next);M.advance(t);t.pending=null;close(true);render();notify('Vencimiento omitido.');break;}
+     case 'process-schedules':{const count=M.processSchedules(data);render();notify(`${count} pagos pendientes preparados. Los conflictos siguen pendientes.`);break;}
+     case 'review':{const p=data.pending.find(p=>p.id===id);composer({...p,id:undefined,type:p.transactionType||'expense',channel:p.sms?'Transferencia':'Google Wallet',candidate:id},{review:p});break;}
+@@ -277,18 +277,10 @@
+       if(remaining(obligations().find(o=>o.id===modalPayload.id))!==modalPayload.expectedRemaining)throw Error('Este pendiente cambió. Cerrá y volvé a abrir el pago.');
+       M.payObligation(data,modalPayload.id,{amount:M.parseMoney(v('amount')),date:v('date'),from:v('from'),carry:values.has('carry'),finalAmount:values.has('finalAmount')});close(true);render();notify('Pago confirmado. Saldo y pendientes actualizados.');
+     }else if(kind==='reminder'){
+-      const o=obligations().find(o=>o.id===modalPayload.id),r=readReminder(values);
+-      for(const n of obligations())if(n.due>=o.due&&(o.planId?n.planId===o.planId:n.templateId===o.templateId)&&remaining(n)>0)n.reminder=M.clone(r);
+-      const t=data.templates.find(t=>t.id===o.templateId);if(t)t.reminder=M.clone(r);
++      M.saveReminder(data,modalPayload.id,readReminder(values));
+       close(true);render();notify('Recordatorios actualizados.');
+     }else if(kind==='obligation-edit'){
+-      const o=obligations().find(o=>o.id===modalPayload.id),amount=M.parseMoney(v('amount')),due=v('due');
+-      if(!Number.isSafeInteger(amount)||amount<=0||!M.validDate(due))throw Error('Ingresá un importe positivo y una fecha válida.');
+-      if(M.obligationPayments(data,o.id).length||o.carryIn||o.carryOut)throw Error('Este pendiente tiene pagos o saldos trasladados. Confirmá el saldo restante para conservar el historial.');
+-      const oldDue=o.due;
+-      const targets=obligations().filter(n=>n.id===o.id||values.has('following')&&n.due>=oldDue&&(o.planId?n.planId===o.planId:n.templateId===o.templateId));
+-      for(const n of targets)if(!n.cancelled&&!M.obligationPayments(data,n.id).length&&!n.carryIn&&!n.carryOut){const offset=(Number(n.due.slice(0,4))-Number(oldDue.slice(0,4)))*12+Number(n.due.slice(5,7))-Number(oldDue.slice(5,7));n.amount=amount;n.due=M.addMonths(due,offset);}
+-      const t=data.templates.find(t=>t.id===o.templateId);if(t&&values.has('following')){t.amount=amount;t.anchor=due;t.next=M.addMonths(due,Math.max(t.frequency==='yearly'?12:1,(Number(t.next.slice(0,4))-Number(oldDue.slice(0,4)))*12+Number(t.next.slice(5,7))-Number(oldDue.slice(5,7))));}
++      M.editObligation(data,modalPayload.id,{amount:M.parseMoney(v('amount')),due:v('due'),following:values.has('following')});
+       close(true);render();notify('Pendientes actualizados. Pagos anteriores conservados.');
+     }else if(kind==='inline-category'){const name=String(v('name')||'').trim();if(!name)throw Error('Ingresá el nombre de la categoría.');const parent=modalPayload;const c={id:M.uid('category'),name,kind:parent.draft.type==='income'?'income':'expense'};data.categories.push(c);parent.draft.category=c.id;close(true);composer(parent.draft,parent.options);notify('Categoría creada en la demostración.');
+     }else if(kind==='transaction') {
+@@ -298,8 +290,7 @@
+       if(options.review){const p=data.pending.find(p=>p.id===options.review.id);p.confirmed=true;const a=M.account(data,draft.from||draft.to);if(a&&p.alias&&!a.aliases.some(alias=>M.normalize(alias)===M.normalize(p.alias)))a.aliases.push(p.alias);const merchant=data.merchants.find(m=>!m.archived&&M.normalize(m.name)===M.normalize(draft.merchant));if(merchant&&p.merchant&&M.normalize(p.merchant)!==M.normalize(merchant.name)&&!merchant.aliases.some(a=>M.normalize(a)===M.normalize(p.merchant))){if(data.merchants.some(m=>m.id!==merchant.id&&m.aliases.some(a=>M.normalize(a)===M.normalize(p.merchant))))throw Error('Este alias ya pertenece a otro comercio. Reasignalo explícitamente en Catálogos.');merchant.aliases.push(p.merchant);}}
+       const another=values.has('another');close(true);render();notify(options.edit?'Movimiento actualizado.':options.review?'Compra registrada. Asociaciones recordadas.':'Movimiento guardado.');if(another)composer({type:t.type,from:t.from,to:t.to});
+     }else if(kind==='template') {
+-      const draft=readDraft(f),t=collectTemplate(f,draft);M.validateTemplate(data,t);const index=data.templates.findIndex(old=>old.id===t.id);if(index<0)data.templates.push(t);else data.templates[index]=t;for(const o of obligations())if(t.schedule&&o.templateId===t.id&&o.due>=M.TODAY&&!o.cancelled&&!M.obligationPayments(data,o.id).length&&!o.carryIn&&!o.carryOut){o.amount=t.amount;o.from=t.from;o.category=t.category;o.name=t.name;o.reminder=M.clone(t.reminder);}
+-      M.processSchedules(data);close(true);render();notify('Plantilla guardada. Los pagos anteriores se conservan.');
++      const draft=readDraft(f),t=collectTemplate(f,draft);M.saveTemplate(data,t,modalPayload.draft.next);close(true);render();notify('Plantilla guardada. Los pagos anteriores se conservan.');
+     }else if(kind==='account') {
+       const {id,inline,parent}=modalPayload;const old=id?M.account(data,id):null;const type=f.elements.accountType.value;const name=String(v('name')||'').trim();if(!name)throw Error('Ingresá el nombre de la cuenta.');const initial=old?old.initial:M.parseMoney(v('initial'));if(!Number.isSafeInteger(initial)||initial<0)throw Error('El saldo inicial debe ser un importe entero positivo o cero.');const aliases=String(v('aliases')||'').split(',').map(a=>a.trim()).filter(Boolean);const account={...old,id:id||M.uid('account'),name,type,initial,aliases:[...new Set(aliases)],available:type==='saving'?values.has('available'):type!=='credit'};if(type==='credit'){account.limit=M.parseMoney(v('limit'));account.closing=Number(v('closing'));account.due=Number(v('due'));if(!Number.isSafeInteger(account.limit)||account.limit<=0||![account.closing,account.due].every(day=>Number.isInteger(day)&&day>=1&&day<=31))throw Error('Completá un límite válido y días entre 1 y 31.');}
+       if(old)data.accounts[data.accounts.indexOf(old)]=account;else data.accounts.push(account);close(true);render();notify('Cuenta guardada.');if(inline){if(parent.draft.type==='income')parent.draft.to=account.id;else parent.draft.from=account.id;composer(parent.draft,parent.options);}
+--- before/model.test.js
++++ after/model.test.js
+@@ -307,3 +307,64 @@
+  const result=M.ingestWallet(d,{id:'capture-pending',merchant:'Cine en Casa',alias:'•• 8820',amount:65000,date:M.TODAY});
+  assert.equal(result.status,'pending');assert.equal(result.candidate.duplicate,true);
+ });
++
++test('regresión R01: previsión dividida y pago parcial conservan categorías al arrastrar',()=>{
++ const d=M.seed();d.transactions=[];d.pending=[];d.templates=[{id:'divided',name:'Servicios',type:'expense',from:'bank',merchant:'Servicios',category:'food',amount:100000,channel:'Transferencia',splits:[{category:'food',amount:40000},{category:'home',amount:60000}],quotas:1,schedule:true,frequency:'monthly',next:'2026-10-06',anchor:'2026-10-06'}];
++ M.processSchedules(d);
++ assert.equal(M.pendingAmount(d,'2026-10-01','2026-10-31',{category:'food'}),40000);
++ assert.equal(M.pendingAmount(d,'2026-10-01','2026-10-31',{category:'home'}),60000);
++ const tx=M.payObligation(d,d.obligations[0].id,{amount:90000,date:M.TODAY,from:'bank',carry:true});
++ assert.deepEqual(M.parts(tx),[{category:'food',amount:36000},{category:'home',amount:54000}]);
++ assert.equal(M.pendingAmount(d,'2026-11-01','2026-11-30',{category:'food'}),44000);
++ assert.equal(M.pendingAmount(d,'2026-11-01','2026-11-30',{category:'home'}),66000);
++ assert.equal(M.report(d,'2026-10-01','2026-10-31','quotas',{category:'home'}).net,54000);
++});
++test('regresión R02: seleccionar sin categoría conserva el reparto original de cuota',()=>{
++ const t=expense({amount:101,from:'credit',quotas:3,splits:[{category:'food',amount:51},{category:'',amount:50}],firstInstallmentDate:M.TODAY});
++ assert.equal(M.periodAmount(t,'2026-10-01','2026-10-31','quotas','',true),17);
++ assert.equal(M.periodAmount(t,'2026-11-01','2026-11-30','quotas','',true),17);
++ assert.equal(M.periodAmount(t,'2026-12-01','2026-12-31','quotas','',true),16);
++});
++test('regresión R03/R04: editar plantilla reconcilia fechas y comercio sin duplicar pendientes',()=>{
++ const d=M.seed('payments');M.processSchedules(d);const t=d.templates.find(t=>t.id==='tpl-electric');
++ M.saveTemplate(d,{...M.clone(t),next:'2026-10-10',anchor:'2026-10-10',merchant:'Proveedor corregido'},'2026-10-09');
++ assert.deepEqual(d.obligations.filter(o=>o.templateId===t.id).map(o=>o.due),['2026-10-10','2026-11-10']);
++ assert.equal(M.pendingAmount(d,'2026-10-01','2026-10-31'),790000);
++ assert.equal(M.processSchedules(d),0);
++ const o=d.obligations.find(o=>o.templateId===t.id);
++ const tx=M.payObligation(d,o.id,{amount:180000,date:M.TODAY,from:'bank',finalAmount:true});
++ assert.equal(tx.merchant,'Proveedor corregido');
++});
++test('regresión R03: edición futura preserva pago previo y año bisiesto de la plantilla',()=>{
++ const d=M.seed();d.transactions=[];d.pending=[];d.templates=[{...d.templates[1],from:'bank',next:'2026-09-30',anchor:'2026-09-30',merchant:'Nuevo servicio'}];M.processSchedules(d);
++ const old=d.obligations[0];M.payObligation(d,old.id,{amount:65000,date:M.TODAY,from:'bank'});
++ const saved=M.clone(d.transactions),t=d.templates[0];
++ M.saveTemplate(d,{...M.clone(t),amount:75000,next:'2026-10-31',anchor:'2026-10-31'},'2026-10-30');
++ assert.deepEqual(d.transactions,saved);assert.equal(d.obligations[0].due,'2026-09-30');assert.equal(d.obligations[0].amount,65000);
++ assert.deepEqual(d.obligations.slice(1).map(o=>o.due),['2026-10-31','2026-11-30']);
++ assert.equal(M.processSchedules(d),0);
++});
++
++test('regresión R05: editar recordatorio actualiza el seleccionado saldado y siguientes pendientes',()=>{
++ const d=M.seed('payments');M.processSchedules(d);const o=d.obligations.find(o=>o.templateId==='tpl-electric');M.payObligation(d,o.id,{amount:180000,date:M.TODAY,from:'bank'});
++ const r={enabled:false,days:5,time:'10:30',onDue:false};M.saveReminder(d,o.id,r);
++ assert.deepEqual(d.obligations.find(n=>n.id===o.id).reminder,r);assert.deepEqual(d.templates.find(t=>t.id===o.templateId).reminder,r);
++ assert.ok(d.obligations.filter(n=>n.templateId===o.templateId&&n.due>o.due).every(n=>JSON.stringify(n.reminder)===JSON.stringify(r)));
++});
++test('regresión R06: editar pendiente dividido escala categorías y plantilla sin pendientes fantasma',()=>{
++ const d=M.seed('payments');M.processSchedules(d);const t=d.templates.find(t=>t.id==='tpl-electric');M.saveTemplate(d,{...t,next:'2026-10-09',amount:100000,splits:[{category:'food',amount:40000},{category:'home',amount:60000}]},'2026-10-09');
++ const o=d.obligations.find(o=>o.templateId===t.id);M.editObligation(d,o.id,{amount:50000,due:'2026-10-10',following:true});
++ assert.equal(M.obligationRemaining(d,d.obligations.find(n=>n.id===o.id)),50000);
++ assert.equal(M.pendingAmount(d,'2026-10-10','2026-10-10'),50000);
++ assert.deepEqual(d.templates.find(n=>n.id===t.id).splits,[{category:'food',amount:20000},{category:'home',amount:30000}]);
++ M.validateTemplate(d,d.templates.find(n=>n.id===t.id));
++ M.payObligation(d,o.id,{amount:50000,date:M.TODAY,from:'bank'});
++ assert.equal(M.pendingAmount(d,'2026-10-10','2026-10-10'),0);assert.equal(M.processSchedules(d),0);
++});
++
++test('regresión R07: cambiar solo importe conserva ancla fin de mes de plan y plantilla',()=>{
++ const d=M.seed();d.transactions=[];d.templates=[];M.createPlan(d,{name:'Fin mes',amount:300000,count:3,first:'2027-01-31',from:'bank',category:'home'});
++ M.editObligation(d,d.obligations[1].id,{amount:120000,due:'2027-02-28',following:true});assert.deepEqual(d.obligations.map(o=>o.due),['2027-01-31','2027-02-28','2027-03-31']);
++ const t={...M.seed().templates[1],from:'bank',next:'2026-10-31',anchor:'2026-10-31'};d.obligations=[];d.templates=[t];M.processSchedules(d);
++ M.editObligation(d,d.obligations[1].id,{amount:75000,due:'2026-11-30',following:true});assert.equal(d.templates[0].next,'2026-12-31');assert.equal(d.templates[0].anchor,'2026-10-31');
++});

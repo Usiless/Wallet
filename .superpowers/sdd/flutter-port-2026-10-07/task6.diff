@@ -1,0 +1,458 @@
+--- a/lib/features/accounts/presentation/accounts_screen.dart
++++ b/lib/features/accounts/presentation/accounts_screen.dart
+@@ -126,7 +126,7 @@
+                                         ? Icons.savings_outlined
+                                         : Icons.account_balance_outlined,
+                                   ),
+-                                  const SizedBox(height: 16),
++                                  const SizedBox(height: 8),
+                                   Text(
+                                     account.name,
+                                     style: Theme.of(context)
+@@ -134,46 +134,23 @@
+                                         .titleSmall,
+                                   ),
+                                   const SizedBox(height: 4),
+-                                  MoneyText(
+-                                    balances
+-                                            .where((b) => b.id == account.id)
+-                                            .firstOrNull
+-                                            ?.balanceMinor ??
+-                                        account.initialBalanceMinor,
+-                                    currencyCode: account.currencyCode,
+-                                    style: Theme.of(context)
+-                                        .textTheme
+-                                        .titleMedium,
++                                  FittedBox(
++                                    fit: BoxFit.scaleDown,
++                                    alignment: Alignment.centerLeft,
++                                    child: MoneyText(
++                                      balances
++                                              .where((b) => b.id == account.id)
++                                              .firstOrNull
++                                              ?.balanceMinor ??
++                                          account.initialBalanceMinor,
++                                      currencyCode: account.currencyCode,
++                                      style: Theme.of(context)
++                                          .textTheme
++                                          .titleMedium,
++                                    ),
+                                   ),
+                                   if (account.isArchived)
+                                     const Text('Archivada'),
+-                                  const SizedBox(height: 12),
+-                                  Wrap(
+-                                    spacing: 8,
+-                                    runSpacing: 4,
+-                                    children: [
+-                                      if (account.type == 'creditCard' &&
+-                                          !account.isArchived)
+-                                        TextButton(
+-                                          onPressed: () => context.push(
+-                                            '/transactions/new?template=cardPayment&to=${account.id}',
+-                                          ),
+-                                          child: const Text('Pagar tarjeta'),
+-                                        ),
+-                                      TextButton(
+-                                        onPressed: () => context.push(
+-                                          '/transactions?account=${account.id}',
+-                                        ),
+-                                        child: const Text('Ver movimientos'),
+-                                      ),
+-                                      TextButton(
+-                                        onPressed: () => context.push(
+-                                          '/accounts?account=${account.id}',
+-                                        ),
+-                                        child: const Text('Administrar'),
+-                                      ),
+-                                    ],
+-                                  ),
+                                 ],
+                               ),
+                             ),
+--- a/lib/app/router.dart
++++ b/lib/app/router.dart
+@@ -257,7 +257,7 @@
+         );
+       }
+       return Scaffold(
+-        body: shell,
++        body: SafeArea(bottom: false, child: shell),
+         bottomNavigationBar: NavigationBar(
+           selectedIndex: shell.currentIndex,
+           onDestinationSelected: (i) => shell.goBranch(i),
+--- /dev/null
++++ b/test/features/management/accounts_compact_regression_test.dart
+@@ -0,0 +1,200 @@
++import 'package:drift/native.dart';
++import 'package:finanzas_locales/app/providers.dart';
++import 'package:finanzas_locales/app/router.dart';
++import 'package:finanzas_locales/app/theme/app_theme.dart';
++import 'package:finanzas_locales/core/database/app_database.dart';
++import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
++import 'package:finanzas_locales/features/accounts/presentation/accounts_screen.dart';
++import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter/rendering.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  for (final variant in [
++    (320.0, 1.0, false),
++    (390.0, 1.0, true),
++    (486.0, 1.0, false),
++    (320.0, 2.0, true),
++    (486.0, 2.0, false),
++  ]) {
++    testWidgets(
++      'Cuentas compactas/insets ${variant.$1} texto ${variant.$2} oscuro ${variant.$3}',
++      (tester) async {
++        tester.view.physicalSize = Size(variant.$1, 1000);
++        tester.view.devicePixelRatio = 1;
++        tester.view.padding = const FakeViewPadding(
++          top: 24,
++          left: 8,
++          right: 8,
++          bottom: 16,
++        );
++        addTearDown(tester.view.resetPhysicalSize);
++        addTearDown(tester.view.resetDevicePixelRatio);
++        addTearDown(tester.view.resetPadding);
++        final db = AppDatabase.forTesting(NativeDatabase.memory());
++        addTearDown(db.close);
++        late String credit;
++        await tester.runAsync(() async {
++          final service = AccountsService(db);
++          await service.createAccount(
++            const CreateAccountDraft(
++              name: 'Banco',
++              type: AccountType.bank,
++              initialBalanceMinor: 1234567890,
++            ),
++          );
++          credit = await service.createAccount(
++            const CreateAccountDraft(
++              name: 'Crédito personal',
++              type: AccountType.creditCard,
++              creditLimitMinor: 2000000000,
++            ),
++          );
++          await service.createAccount(
++            const CreateAccountDraft(
++              name: 'Efectivo',
++              type: AccountType.cash,
++              initialBalanceMinor: -1234567890,
++            ),
++          );
++        });
++        final container = ProviderContainer(
++          overrides: [
++            databaseProvider.overrideWithValue(db),
++            onboardingCompleteProvider.overrideWith(
++              (ref) => Stream.value(true),
++            ),
++          ],
++        );
++        final router = container.read(routerProvider)..go('/accounts');
++        await tester.pumpWidget(
++          UncontrolledProviderScope(
++            container: container,
++            child: MaterialApp.router(
++              theme: variant.$3 ? AppTheme.dark() : AppTheme.light(),
++              routerConfig: router,
++              builder: (context, child) => MediaQuery(
++                data: MediaQuery.of(context)
++                    .copyWith(textScaler: TextScaler.linear(variant.$2)),
++                child: child!,
++              ),
++            ),
++          ),
++        );
++        Future<void> settle() async {
++          await tester.runAsync(
++            () => Future<void>.delayed(const Duration(milliseconds: 40)),
++          );
++          await tester.pumpAndSettle();
++        }
++
++        await settle();
++        if (variant.$1 == 390) expect(find.text('Pagar tarjeta'), findsNothing);
++        final chip = find.widgetWithText(ChoiceChip, 'Todas');
++        expect(
++          tester.getTopLeft(chip).dy,
++          greaterThanOrEqualTo(40),
++          reason: 'Contenido bajo la barra de estado.',
++        );
++        expect(
++          tester.getTopLeft(chip).dx,
++          greaterThanOrEqualTo(24),
++          reason: 'Respetar recortes laterales.',
++        );
++        expect(find.text('Pagar tarjeta'), findsNothing);
++        expect(find.text('Administrar'), findsNothing);
++        expect(find.text('Ver movimientos'), findsNothing);
++        for (final expected in ['1.234.567.890', '-1.234.567.890']) {
++          final amountFinder = find.byWidgetPredicate(
++            (widget) =>
++                widget is Text &&
++                RegExp(
++                  '^${RegExp.escape(expected)}'
++                  r'\s+PYG\s*$',
++                ).hasMatch(widget.data ?? ''),
++          );
++          await tester.scrollUntilVisible(
++            amountFinder,
++            120,
++            scrollable: find.byType(Scrollable).first,
++          );
++          await tester.pumpAndSettle();
++          final text = amountFinder;
++          final amount = tester.widget<Text>(text).data!;
++          expect(
++            amount.replaceAll(RegExp(r'\s+'), ' ').trim(),
++            '$expected PYG',
++          );
++          final paragraph = tester.renderObject<RenderParagraph>(text);
++          expect(paragraph.didExceedMaxLines, false);
++          final card = find.ancestor(of: text, matching: find.byType(Card));
++          final bounds = tester.getRect(card);
++          final boxes = paragraph.getBoxesForSelection(
++            TextSelection(baseOffset: 0, extentOffset: amount.length),
++          );
++          expect(boxes, isNotEmpty);
++          for (final box in boxes) {
++            expect(
++              bounds.contains(
++                paragraph.localToGlobal(Offset(box.left, box.top)),
++              ),
++              true,
++            );
++            expect(
++              bounds.contains(
++                paragraph.localToGlobal(Offset(box.right, box.bottom)),
++              ),
++              true,
++            );
++          }
++        }
++        await tester.scrollUntilVisible(
++          find.text('Crédito personal'),
++          -120,
++          scrollable: find.byType(Scrollable).first,
++        );
++        await tester.tap(find.text('Crédito personal'));
++        await settle();
++        expect(
++          tester
++              .widget<AccountsScreen>(find.byType(AccountsScreen).last)
++              .accountId,
++          credit,
++        );
++        expect(tester.getTopLeft(find.byType(AppBar)).dy, 24);
++        expect(
++          tester.getSize(find.byType(AppBar)).height,
++          56,
++          reason: 'Sin duplicar inset en detalle.',
++        );
++        await tester.scrollUntilVisible(
++          find.text('Pagar esta tarjeta'),
++          150,
++          scrollable: find.byType(Scrollable).first,
++        );
++        await settle();
++        expect(find.text('Pagar esta tarjeta'), findsOneWidget);
++        await tester.scrollUntilVisible(
++          find.text('Editar'),
++          150,
++          scrollable: find.byType(Scrollable).first,
++        );
++        for (final label in [
++          'Ver movimientos',
++          'Editar',
++          'Archivar',
++          'Conciliar saldo',
++        ]) {
++          expect(find.text(label), findsOneWidget);
++        }
++        expect(tester.takeException(), isNull);
++        await tester.pumpWidget(const SizedBox.shrink());
++        router.dispose();
++        container.dispose();
++        await tester.pump(const Duration(milliseconds: 1));
++      },
++    );
++  }
++}
+--- /dev/null
++++ b/tool/qa/flutter_accounts_capture_test.dart
+@@ -0,0 +1,169 @@
++// Explicit host-rendering evidence. Not an Android screenshot or a pixel assertion.
++import 'dart:convert';
++import 'dart:io';
++import 'dart:typed_data';
++
++import 'package:finanzas_locales/app/providers.dart';
++import 'package:finanzas_locales/app/theme/app_theme.dart';
++import 'package:finanzas_locales/app/router.dart';
++import 'package:drift/native.dart';
++import 'package:finanzas_locales/core/database/app_database.dart';
++import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
++import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
++import 'package:flutter/material.dart';
++import 'package:flutter/services.dart';
++import 'package:flutter_localizations/flutter_localizations.dart';
++import 'package:flutter_riverpod/flutter_riverpod.dart';
++import 'package:flutter_test/flutter_test.dart';
++
++void main() {
++  setUpAll(() async {
++    final config = jsonDecode(
++      File('.dart_tool/package_config.json').readAsStringSync(),
++    ) as Map;
++    final flutter = (config['packages'] as List).cast<Map>().firstWhere(
++      (p) => p['name'] == 'flutter',
++    );
++    final root = Directory.fromUri(Uri.parse(flutter['rootUri'] as String))
++        .parent
++        .parent;
++    final font = FontLoader('Roboto');
++    for (final name in ['Regular', 'Medium', 'Bold']) {
++      font.addFont(
++        Future.value(
++          ByteData.sublistView(
++            File(
++              '${root.path}/bin/cache/artifacts/material_fonts/Roboto-$name.ttf',
++            ).readAsBytesSync(),
++          ),
++        ),
++      );
++    }
++    await font.load();
++    final icons = FontLoader('MaterialIcons')
++      ..addFont(
++        Future.value(
++          ByteData.sublistView(
++            File(
++              '${root.path}/bin/cache/artifacts/material_fonts/MaterialIcons-Regular.otf',
++            ).readAsBytesSync(),
++          ),
++        ),
++      );
++    await icons.load();
++    final fallback = FontLoader('NotoSans')
++      ..addFont(
++        Future.value(
++          ByteData.sublistView(
++            File('/usr/share/fonts/google-noto/NotoSans-Regular.ttf')
++                .readAsBytesSync(),
++          ),
++        ),
++      );
++    await fallback.load();
++  });
++  const phase = String.fromEnvironment('CAPTURE_PHASE', defaultValue: 'before');
++  for (final variant in [
++    (390.0, 1.0, false),
++    (320.0, 2.0, true),
++    (486.0, 1.0, false),
++  ]) {
++    testWidgets('Flutter Cuentas $phase ${variant.$1} texto ${variant.$2}', (
++      tester,
++    ) async {
++      tester.view.physicalSize = Size(variant.$1, 1000);
++      tester.view.devicePixelRatio = 1;
++      tester.view.padding = const FakeViewPadding(
++        top: 24,
++        left: 8,
++        right: 8,
++        bottom: 16,
++      );
++      addTearDown(tester.view.resetPhysicalSize);
++      addTearDown(tester.view.resetDevicePixelRatio);
++      addTearDown(tester.view.resetPadding);
++      final db = AppDatabase.forTesting(NativeDatabase.memory());
++      addTearDown(db.close);
++      await tester.runAsync(() async {
++        final service = AccountsService(db);
++        for (final draft in [
++          const CreateAccountDraft(
++            name: 'Banco diario',
++            type: AccountType.bank,
++            initialBalanceMinor: 1234567890,
++          ),
++          const CreateAccountDraft(
++            name: 'Visa',
++            type: AccountType.creditCard,
++            creditLimitMinor: 2000000000,
++          ),
++          const CreateAccountDraft(
++            name: 'Efectivo',
++            type: AccountType.cash,
++            initialBalanceMinor: 830000,
++          ),
++          const CreateAccountDraft(
++            name: 'Ahorro',
++            type: AccountType.savings,
++            initialBalanceMinor: 5000000,
++          ),
++        ]) {
++          await service.createAccount(draft);
++        }
++      });
++      final container = ProviderContainer(
++        overrides: [
++          databaseProvider.overrideWithValue(db),
++          onboardingCompleteProvider.overrideWith((ref) => Stream.value(true)),
++        ],
++      );
++      final router = container.read(routerProvider)..go('/accounts');
++      final key = GlobalKey();
++      final theme = variant.$3 ? AppTheme.dark() : AppTheme.light();
++      await tester.pumpWidget(
++        UncontrolledProviderScope(
++          container: container,
++          child: RepaintBoundary(
++            key: key,
++            child: MaterialApp.router(
++              theme: theme.copyWith(
++                textTheme: theme.textTheme.apply(
++                  fontFamily: 'Roboto',
++                  fontFamilyFallback: ['NotoSans'],
++                ),
++              ),
++              locale: const Locale('es', 'PY'),
++              supportedLocales: const [Locale('es', 'PY')],
++              localizationsDelegates: const [
++                GlobalMaterialLocalizations.delegate,
++                GlobalWidgetsLocalizations.delegate,
++                GlobalCupertinoLocalizations.delegate,
++              ],
++              routerConfig: router,
++              builder: (context, child) => MediaQuery(
++                data: MediaQuery.of(context)
++                    .copyWith(textScaler: TextScaler.linear(variant.$2)),
++                child: child!,
++              ),
++            ),
++          ),
++        ),
++      );
++      await tester.runAsync(
++        () => Future<void>.delayed(const Duration(milliseconds: 80)),
++      );
++      await tester.pumpAndSettle();
++      expect(tester.takeException(), isNull);
++      await expectLater(
++        find.byKey(key),
++        matchesGoldenFile(
++          '../../docs/evaluation/flutter-port-2026-10-07/flutter-accounts-$phase-${variant.$1.toInt()}-${variant.$2.toInt()}x.png',
++        ),
++      );
++      await tester.pumpWidget(const SizedBox.shrink());
++      router.dispose();
++      container.dispose();
++      await tester.pump(const Duration(milliseconds: 1));
++    });
++  }
++}

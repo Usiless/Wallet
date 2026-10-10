@@ -1,0 +1,12 @@
+{
+  "files.exclude": {
+    "build": true,
+    ".dart_tool": true,
+    ".flutter-plugins-dependencies": true,
+    "android/.gradle": true,
+    "android/.kotlin": true,
+    "linux/flutter/ephemeral": true,
+    "**/*.iml": true,
+    "devtools_options.yaml": true
+  }
+}

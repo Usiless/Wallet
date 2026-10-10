@@ -1,0 +1,33 @@
+PASS numeric initial 0
+PASS numeric initial 500000
+PASS numeric initial 999999999
+PASS numeric initial "500.000"
+PASS numeric initial ""
+PASS form alert semantics
+PASS home values and fictitious row labels retained
+PASS payment detail nav origin home
+PASS payment detail nav origin history
+PASS payment detail nav origin accounts
+PASS payment detail nav origin analysis
+PASS payment detail nav origin more
+PASS render helper home
+PASS render helper accounts
+PASS render helper payments
+PASS render helper templates
+PASS render helper wallet
+PASS render helper backup
+PASS render helper security
+PASS render helper info
+PASS report render Resumen
+PASS report render Evolución
+PASS report render Categorías
+PASS report render Comercios
+PASS report render Cuentas
+PASS no accounts actionable
+PASS literal empty history message
+PASS long payment name escaped and amount intact
+{
+  "checks": 28,
+  "failures": 0,
+  "method": "VM render helpers, stub document; not browser interaction/layout"
+}

@@ -1,0 +1,58 @@
+TAP version 13
+# Subtest: 250% totalmente pendiente: 40% verde rayado y 60% rojo rayado
+ok 1 - 250% totalmente pendiente: 40% verde rayado y 60% rojo rayado
+  ---
+  duration_ms: 2.561139
+  type: 'test'
+  ...
+# Subtest: 300% pagado: un tercio dentro y dos tercios exceso
+ok 2 - 300% pagado: un tercio dentro y dos tercios exceso
+  ---
+  duration_ms: 0.187116
+  type: 'test'
+  ...
+# Subtest: 250% mixto: pago ocupa presupuesto antes de pendientes
+ok 3 - 250% mixto: pago ocupa presupuesto antes de pendientes
+  ---
+  duration_ms: 0.256243
+  type: 'test'
+  ...
+# Subtest: pagos también pueden exceder y pendientes permanecen rayados
+ok 4 - pagos también pueden exceder y pendientes permanecen rayados
+  ---
+  duration_ms: 0.283014
+  type: 'test'
+  ...
+# Subtest: bajo objetivo conserva tramo vacío
+ok 5 - bajo objetivo conserva tramo vacío
+  ---
+  duration_ms: 0.255954
+  type: 'test'
+  ...
+# Subtest: cero sin segmentos
+ok 6 - cero sin segmentos
+  ---
+  duration_ms: 0.152548
+  type: 'test'
+  ...
+# Subtest: devoluciones netean pendientes sin inventar pagos
+ok 7 - devoluciones netean pendientes sin inventar pagos
+  ---
+  duration_ms: 0.253016
+  type: 'test'
+  ...
+# Subtest: longitudes finitas, no negativas y suma coincide con proporción
+ok 8 - longitudes finitas, no negativas y suma coincide con proporción
+  ---
+  duration_ms: 0.584982
+  type: 'test'
+  ...
+1..8
+# tests 8
+# suites 0
+# pass 8
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 20.60004

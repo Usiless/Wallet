@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="quick_expense"
+        android:enabled="true"
+        android:icon="@drawable/ic_shortcut_expense"
+        android:shortcutShortLabel="@string/shortcut_expense_short"
+        android:shortcutLongLabel="@string/shortcut_expense_long">
+        <intent
+            android:action="py.finanzaslocales.QUICK_EXPENSE"
+            android:targetPackage="py.finanzaslocales.finanzas_locales"
+            android:targetClass="py.finanzaslocales.finanzas_locales.MainActivity" />
+    </shortcut>
+</shortcuts>

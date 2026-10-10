@@ -1,0 +1,4 @@
+storePassword=CAMBIAR
+keyPassword=CAMBIAR
+keyAlias=finanzas_locales
+storeFile=../keystore/finanzas-locales-upload.jks

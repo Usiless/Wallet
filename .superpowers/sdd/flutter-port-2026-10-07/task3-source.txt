@@ -1,0 +1,3754 @@
+Current source snapshot; original historical diff unavailable after environment restart.
+
+FILE lib/features/transactions/presentation/transaction_form_screen.dart
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../app/providers.dart';
+import '../../../core/database/app_database.dart';
+import '../../../core/money/money.dart';
+import '../../../core/money/pyg_input_formatter.dart';
+import '../domain/ledger_models.dart';
+import '../../payments/domain/pending_payment_models.dart';
+import '../../payments/presentation/payment_reminder_fields.dart';
+import '../domain/payment_channel_policy.dart';
+import '../../merchants/merchant_autocomplete.dart';
+import '../../templates/scheduled_template_service.dart';
+import '../../templates/template_summary.dart';
+
+final class TransactionFormScreen extends ConsumerStatefulWidget {
+  const TransactionFormScreen({
+    this.initialType = TransactionType.expense,
+    this.template,
+    this.cloneId,
+    this.editId,
+    this.toAccountId,
+    this.savedTemplateId,
+    this.editTemplate = false,
+    super.key,
+  });
+
+  final TransactionType initialType;
+  final String? template;
+  final String? cloneId;
+  final String? editId;
+  final String? toAccountId;
+  final String? savedTemplateId;
+  final bool editTemplate;
+
+  @override
+  ConsumerState<TransactionFormScreen> createState() =>
+      _TransactionFormScreenState();
+}
+
+class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
+  final _formKey = GlobalKey<FormState>();
+  String? _baseline;
+  bool _confirmingExit = false;
+  String get _draftSnapshot => jsonEncode([
+    _type.name,
+    _amount.text,
+    _merchant.text,
+    _note.text,
+    _from,
+    _to,
+    _category,
+    _occurredAt.toIso8601String(),
+    _channel.name,
+    _installments,
+    _installmentCount,
+    _reminders.toJson(),
+    _firstInstallmentDate?.toIso8601String(),
+    _splitEnabled,
+    [
+      for (final split in _splits) [split.categoryId, split.amount.text],
+    ],
+    _alsoSaveTemplate,
+    _templateName,
+    _templateSchedule,
+  ]);
+  Future<void> _tryExit(bool didPop, Object? result) async {
+    if (didPop || _confirmingExit || _saving) return;
+    _confirmingExit = true;
+    final discard = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('¿Descartar cambios?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('Seguir editando'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('Descartar'),
+          ),
+        ],
+      ),
+    );
+    _confirmingExit = false;
+    if (discard != true || !mounted) return;
+    setState(() => _baseline = _draftSnapshot);
+    await WidgetsBinding.instance.endOfFrame;
+    if (mounted) context.pop();
+  }
+
+  final _amount = TextEditingController();
+  final _merchant = TextEditingController();
+  final _note = TextEditingController();
+  late TransactionType _type;
+  String? _from;
+  String? _to;
+  String? _category;
+  MerchantRecord? _selectedMerchant;
+  String? _awaitingCategory;
+  DateTime _occurredAt = DateTime.now();
+  PaymentChannel _channel = PaymentChannel.other;
+  var _advanced = false;
+  var _saveAnother = false;
+  var _alsoSaveTemplate = false;
+  var _installments = false;
+  var _installmentCount = 2;
+  PaymentReminderSettings _reminders = const PaymentReminderSettings();
+  DateTime? _firstInstallmentDate;
+  late final int _bookGeneration;
+  var _saving = false;
+  var _templateApplied = false;
+  var _loadingTemplate = false;
+  String? _templateError;
+  DateTime? _editingUpdatedAt;
+  List<AccountRecord> _editingAccounts = [];
+  List<CategoryRecord> _editingCategories = [];
+  String? _originalMerchantId;
+  String _templateName = '';
+  Map<String, dynamic>? _templateSchedule;
+  var _splitEnabled = false;
+  final List<_SplitInput> _splits = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _bookGeneration = ref.read(databaseProvider).restoreGeneration;
+    _type = widget.initialType;
+    _to = widget.toAccountId;
+    if (widget.editId != null) _loadClone(widget.editId!);
+    if (widget.cloneId != null) _loadClone(widget.cloneId!);
+    if (widget.savedTemplateId != null) {
+      _loadSavedTemplate(widget.savedTemplateId!);
+    }
+  }
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _merchant.dispose();
+    _note.dispose();
+    for (final split in _splits) {
+      split.dispose();
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final accountsAsync = ref.watch(accountsProvider);
+    final categoriesAsync = ref.watch(categoriesProvider);
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(
+          widget.editTemplate
+              ? 'Editar plantilla'
+              : widget.editId != null
+              ? 'Editar movimiento'
+              : 'Nuevo movimiento',
+        ),
+        actions: [
+          if (!widget.editTemplate && widget.editId == null)
+            IconButton(
+              tooltip: 'Usar plantilla',
+              onPressed: _saving ? null : _useTemplate,
+              icon: const Icon(Icons.bookmarks_outlined),
+            ),
+        ],
+      ),
+      body: accountsAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, _) => Center(child: Text('$error')),
+        data: (activeAccounts) {
+          final accounts = [
+            ...activeAccounts,
+            if (widget.editId != null)
+              ..._editingAccounts.where(
+                (a) => !activeAccounts.any((r) => r.id == a.id),
+              ),
+          ];
+          if (_loadingTemplate) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (_templateError != null) {
+            return Center(child: Text(_templateError!));
+          }
+          if (!_templateApplied && widget.template != null) {
+            _templateApplied = true;
+            WidgetsBinding.instance.addPostFrameCallback(
+              (_) => _applyTemplate(widget.template!, accounts),
+            );
+          }
+          final activeCategories =
+              categoriesAsync.value ?? const <CategoryRecord>[];
+          final categories = [
+            ...activeCategories,
+            if (widget.editId != null)
+              ..._editingCategories.where(
+                (c) => !activeCategories.any((r) => r.id == c.id),
+              ),
+          ];
+          final availableCategories = categories
+              .where(_categoryMatchesType)
+              .toList();
+          if (availableCategories.any((row) => row.id == _awaitingCategory)) {
+            _awaitingCategory = null;
+          }
+          if (!categoriesAsync.isLoading &&
+              _category != _awaitingCategory &&
+              !availableCategories.any((row) => row.id == _category)) {
+            _category = null;
+          }
+          for (final split in _splits) {
+            if (!categoriesAsync.isLoading &&
+                !availableCategories.any((row) => row.id == split.categoryId)) {
+              split.categoryId = null;
+            }
+          }
+          if (!accounts.any((row) => row.id == _from)) _from = null;
+          if (!accounts.any((row) => row.id == _to) ||
+              (_type == TransactionType.transfer && _from == _to)) {
+            _to = null;
+          }
+
+          final channels = PaymentChannelPolicy.allowed(
+            _type,
+            from: accounts.where((a) => a.id == _from).firstOrNull == null
+                ? null
+                : AccountType.values.byName(
+                    accounts.firstWhere((a) => a.id == _from).type,
+                  ),
+            to: accounts.where((a) => a.id == _to).firstOrNull == null
+                ? null
+                : AccountType.values.byName(
+                    accounts.firstWhere((a) => a.id == _to).type,
+                  ),
+          );
+          _channel = PaymentChannelPolicy.canonical(_channel);
+          if (!channels.contains(_channel)) _channel = channels.first;
+          _baseline ??= _draftSnapshot;
+          return Form(
+            key: _formKey,
+            canPop: !_saving && _baseline == _draftSnapshot,
+            onPopInvokedWithResult: _tryExit,
+            onChanged: () {
+              if (mounted) setState(() {});
+            },
+            child: ListView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+              children: [
+                TextFormField(
+                  controller: _amount,
+                  inputFormatters: [PygInputFormatter()],
+                  autofocus: widget.cloneId == null,
+                  keyboardType: TextInputType.number,
+                  textInputAction: TextInputAction.next,
+                  style: Theme.of(context).textTheme.headlineMedium,
+                  decoration: const InputDecoration(
+                    prefixText: 'PYG ',
+                    labelText: 'Importe',
+                  ),
+                  validator: (value) {
+                    try {
+                      if (Money.parse(value ?? '').minorUnits <= 0) {
+                        return 'Debe ser mayor que cero';
+                      }
+                    } catch (_) {
+                      return 'Ingresá un importe válido';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                if (MediaQuery.sizeOf(context).width < 420 &&
+                    MediaQuery.textScalerOf(context).scale(14) > 20)
+                  DropdownButtonFormField<TransactionType>(
+                    initialValue: _type,
+                    isExpanded: true,
+                    decoration: const InputDecoration(labelText: 'Tipo'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: TransactionType.expense,
+                        child: Text('Gasto'),
+                      ),
+                      DropdownMenuItem(
+                        value: TransactionType.income,
+                        child: Text('Ingreso'),
+                      ),
+                      DropdownMenuItem(
+                        value: TransactionType.transfer,
+                        child: Text('Transferir'),
+                      ),
+                    ],
+                    onChanged: widget.editId != null
+                        ? null
+                        : (value) => setState(() => _type = value ?? _type),
+                  )
+                else
+                  SegmentedButton<TransactionType>(
+                    segments: const [
+                      ButtonSegment(
+                        value: TransactionType.expense,
+                        label: Text('Gasto'),
+                        icon: Icon(Icons.south_west),
+                      ),
+                      ButtonSegment(
+                        value: TransactionType.income,
+                        label: Text('Ingreso'),
+                        icon: Icon(Icons.north_east),
+                      ),
+                      ButtonSegment(
+                        value: TransactionType.transfer,
+                        label: Text('Transferir'),
+                        icon: Icon(Icons.swap_horiz),
+                      ),
+                    ],
+                    selected: {_type},
+                    onSelectionChanged: widget.editId != null
+                        ? null
+                        : (value) => setState(() {
+                            _type = value.first;
+                          }),
+                  ),
+                const SizedBox(height: 16),
+                if (_needsFrom)
+                  _AccountField(
+                    label: 'Cuenta de origen',
+                    value: _from,
+                    accounts: accounts,
+                    onChanged: (value) => setState(() => _from = value),
+                  ),
+                if (_needsFrom && _needsTo) const SizedBox(height: 12),
+                if (_needsTo)
+                  _AccountField(
+                    label: 'Cuenta de destino',
+                    value: _to,
+                    accounts: accounts,
+                    excludedId: _needsFrom ? _from : null,
+                    onChanged: (value) => setState(() => _to = value),
+                  ),
+                if (_type != TransactionType.transfer) ...[
+                  const SizedBox(height: 12),
+                  if (!_splitEnabled)
+                    DropdownButtonFormField<String>(
+                      key: ValueKey((
+                        'category',
+                        _type,
+                        _category,
+                        availableCategories.map((row) => row.id).join(','),
+                      )),
+                      initialValue:
+                          availableCategories.any((row) => row.id == _category)
+                          ? _category
+                          : null,
+                      decoration: InputDecoration(
+                        labelText: 'Categoría',
+                        suffixIcon: IconButton(
+                          tooltip: 'Crear categoría',
+                          onPressed: () => _createCategory(categories),
+                          icon: const Icon(Icons.add),
+                        ),
+                      ),
+                      items: [
+                        for (final category in categories.where(
+                          _categoryMatchesType,
+                        ))
+                          DropdownMenuItem(
+                            value: category.id,
+                            child: Text(
+                              category.name,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      onChanged: (value) => setState(() => _category = value),
+                    ),
+                  TextButton.icon(
+                    onPressed: categories.isEmpty
+                        ? null
+                        : () => _toggleSplits(categories),
+                    icon: const Icon(Icons.call_split),
+                    label: Text(
+                      _splitEnabled
+                          ? 'Usar una sola categoría'
+                          : 'Dividir entre categorías',
+                    ),
+                  ),
+                  if (_splitEnabled) ...[
+                    for (var index = 0; index < _splits.length; index++)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: DropdownButtonFormField<String>(
+                                isExpanded: true,
+                                key: ValueKey((
+                                  _splits[index],
+                                  _type,
+                                  _splits[index].categoryId,
+                                  availableCategories
+                                      .map((row) => row.id)
+                                      .join(','),
+                                )),
+                                initialValue:
+                                    availableCategories.any(
+                                      (row) =>
+                                          row.id == _splits[index].categoryId,
+                                    )
+                                    ? _splits[index].categoryId
+                                    : null,
+                                decoration: const InputDecoration(
+                                  labelText: 'Categoría',
+                                ),
+                                items: [
+                                  for (final category in categories.where(
+                                    _categoryMatchesType,
+                                  ))
+                                    DropdownMenuItem(
+                                      value: category.id,
+                                      child: Text(
+                                        category.name,
+                                        overflow: TextOverflow.ellipsis,
+                                      ),
+                                    ),
+                                ],
+                                onChanged: (value) =>
+                                    _splits[index].categoryId = value,
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: TextFormField(
+                                controller: _splits[index].amount,
+                                inputFormatters: [PygInputFormatter()],
+                                keyboardType: TextInputType.number,
+                                decoration: const InputDecoration(
+                                  labelText: 'Importe',
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Quitar división',
+                              onPressed: _splits.length <= 2
+                                  ? null
+                                  : () => setState(
+                                      () => _splits.removeAt(index).dispose(),
+                                    ),
+                              icon: const Icon(Icons.remove_circle_outline),
+                            ),
+                          ],
+                        ),
+                      ),
+                    TextButton.icon(
+                      onPressed: () =>
+                          setState(() => _splits.add(_SplitInput())),
+                      icon: const Icon(Icons.add),
+                      label: const Text('Otra categoría'),
+                    ),
+                  ],
+                  const SizedBox(height: 4),
+                  if (_type == TransactionType.expense)
+                    MerchantAutocomplete(
+                      label: 'Descripción',
+                      controller: _merchant,
+                      onSelected: (merchant) async {
+                        _selectedMerchant = merchant;
+                        final previousCategory = _category;
+                        final category = await ref
+                            .read(merchantServiceProvider)
+                            .defaultCategory(merchant.id);
+                        if (mounted &&
+                            _type == TransactionType.expense &&
+                            _selectedMerchant?.id == merchant.id &&
+                            _merchant.text == merchant.name &&
+                            _category == previousCategory &&
+                            !_splitEnabled) {
+                          setState(() => _category = category);
+                        }
+                      },
+                    )
+                  else
+                    TextFormField(
+                      controller: _merchant,
+                      decoration: InputDecoration(
+                        labelText: _type == TransactionType.income
+                            ? 'Pagador'
+                            : 'Comercio',
+                      ),
+                    ),
+                ],
+                if (_type == TransactionType.expense &&
+                    (widget.editId == null || _isCreditExpense(accounts)))
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _installments,
+                    onChanged: (value) => setState(() => _installments = value),
+                    title: const Text('En cuotas'),
+                  ),
+                if (_installments && _type == TransactionType.expense)
+                  DropdownButtonFormField<int>(
+                    isExpanded: true,
+                    initialValue: _installmentCount,
+                    decoration: const InputDecoration(
+                      labelText: 'Cantidad de cuotas',
+                    ),
+                    items: [
+                      for (var count = 2; count <= 120; count++)
+                        DropdownMenuItem(
+                          value: count,
+                          child: Text(
+                            '$count cuotas',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                    ],
+                    onChanged: (value) =>
+                        setState(() => _installmentCount = value ?? 2),
+                  ),
+                if (_installments &&
+                    _type == TransactionType.expense &&
+                    !widget.editTemplate)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Primera cuota'),
+                    subtitle: Text(
+                      MaterialLocalizations.of(
+                        context,
+                      ).formatShortDate(_firstInstallmentDate ?? _occurredAt),
+                    ),
+                    trailing: const Icon(Icons.calendar_month_outlined),
+                    onTap: () async {
+                      final first = _firstInstallmentDate ?? _occurredAt;
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: first,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (picked != null && mounted) {
+                        setState(
+                          () => _firstInstallmentDate = DateTime.utc(
+                            picked.year,
+                            picked.month,
+                            picked.day,
+                            12,
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: () => setState(() => _advanced = !_advanced),
+                  icon: Icon(_advanced ? Icons.expand_less : Icons.tune),
+                  label: Text(_advanced ? 'Ocultar detalles' : 'Más detalles'),
+                ),
+                if (_advanced) ...[
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.calendar_today),
+                    title: const Text('Fecha'),
+                    subtitle: Text(
+                      '${_occurredAt.day}/${_occurredAt.month}/${_occurredAt.year}',
+                    ),
+                    onTap: _pickDate,
+                  ),
+                  DropdownButtonFormField<PaymentChannel>(
+                    key: ValueKey(_channel),
+                    initialValue: _channel,
+                    decoration: const InputDecoration(labelText: 'Canal'),
+                    items: [
+                      for (final channel in channels)
+                        DropdownMenuItem(
+                          value: channel,
+                          child: Text(_channelLabel(channel)),
+                        ),
+                    ],
+                    onChanged: (value) =>
+                        setState(() => _channel = value ?? _channel),
+                  ),
+                  const SizedBox(height: 12),
+                  TextFormField(
+                    controller: _note,
+                    maxLines: 2,
+                    decoration: const InputDecoration(labelText: 'Nota'),
+                  ),
+                ],
+                if (_installments &&
+                    _type == TransactionType.expense &&
+                    !_isCreditExpense(accounts) &&
+                    widget.editId == null)
+                  PaymentReminderFields(
+                    value: _reminders,
+                    onChanged: (v) => setState(() => _reminders = v),
+                  ),
+                if (!widget.editTemplate &&
+                    widget.editId == null &&
+                    !(_installments &&
+                        _type == TransactionType.expense &&
+                        !_isCreditExpense(accounts)))
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Guardar también como plantilla'),
+                    value: _alsoSaveTemplate,
+                    onChanged: _saving
+                        ? null
+                        : (value) => setState(
+                            () => _alsoSaveTemplate = value ?? false,
+                          ),
+                  ),
+                if (!widget.editTemplate && widget.editId == null)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: _saveAnother,
+                    onChanged: (value) =>
+                        setState(() => _saveAnother = value ?? false),
+                    title: const Text('Guardar y crear otro'),
+                  ),
+                const SizedBox(height: 16),
+                FilledButton.icon(
+                  onPressed: _saving
+                      ? null
+                      : () => widget.editTemplate
+                            ? _saveTemplate()
+                            : _save(accounts),
+                  icon: const Icon(Icons.check),
+                  label: Text(
+                    _saving
+                        ? 'Guardando…'
+                        : widget.editTemplate
+                        ? 'Guardar plantilla'
+                        : widget.editId != null
+                        ? 'Guardar cambios'
+                        : 'Guardar movimiento',
+                  ),
+                ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+
+  Future<void> _loadSavedTemplate(String id) async {
+    _loadingTemplate = true;
+    _templateError = null;
+    try {
+      final template = await ref.read(manualTemplateServiceProvider).read(id);
+      if (template == null) throw StateError('La plantilla ya no existe.');
+      if (!mounted) return;
+      final f = template.fields;
+      final merchantId = f['merchantId'] as String?;
+      final linkedMerchant = merchantId == null
+          ? null
+          : await (ref
+                    .read(databaseProvider)
+                    .select(ref.read(databaseProvider).merchants)
+                  ..where((t) => t.id.equals(merchantId)))
+                .getSingleOrNull();
+      if (!mounted) return;
+      setState(() {
+        _templateName = template.name;
+        if (widget.editTemplate && f['schedule'] is Map) {
+          _templateSchedule = Map<String, dynamic>.from(f['schedule'] as Map);
+        }
+        _type = TransactionType.values.byName(f['type'] as String);
+        _amount.text = f['amountMinor'] == null
+            ? ''
+            : Money(f['amountMinor'] as int).format(withCode: false).trim();
+        _from = f['from'] as String?;
+        _to = f['to'] as String?;
+        _category = f['category'] as String?;
+        _selectedMerchant = linkedMerchant?.isArchived == false
+            ? linkedMerchant
+            : null;
+        _merchant.text =
+            _selectedMerchant?.name ?? f['merchant'] as String? ?? '';
+        _note.text = f['note'] as String? ?? '';
+        _channel = PaymentChannel.values.byName(
+          f['channel'] as String? ?? 'other',
+        );
+        _installments = f['installments'] as bool? ?? false;
+        _installmentCount = f['installmentCount'] as int? ?? 2;
+        _reminders = f['reminders'] is Map
+            ? PaymentReminderSettings.fromJson(f['reminders'] as Map)
+            : const PaymentReminderSettings();
+        _splitEnabled = f['splitEnabled'] as bool? ?? false;
+        for (final item in f['splits'] as List? ?? []) {
+          _splits.add(
+            _SplitInput(categoryId: item['category'] as String?)
+              ..amount.text = item['amountMinor'] == null
+                  ? ''
+                  : Money(item['amountMinor'] as int)
+                        .format(withCode: false)
+                        .trim(),
+          );
+        }
+        _advanced = _installments || _note.text.isNotEmpty;
+        if (widget.savedTemplateId != null) _baseline = _draftSnapshot;
+      });
+    } catch (error) {
+      if (mounted) _templateError = '$error';
+    } finally {
+      if (mounted) setState(() => _loadingTemplate = false);
+    }
+  }
+
+  Future<({String name, Map<String, dynamic> fields})?> _collectTemplate({
+    bool afterRegistration = false,
+  }) async {
+    String name = _templateName;
+    bool includeAmount = _amount.text.trim().isNotEmpty;
+    bool automatic = _templateSchedule?['enabled'] == true;
+    var reminderSettings = _reminders;
+    String frequency = _templateSchedule?['frequency'] as String? ?? 'monthly';
+    DateTime nextDate = _templateSchedule?['nextDate'] is String
+        ? parseScheduledDate(_templateSchedule!['nextDate'] as String)
+        : afterRegistration
+        ? nextScheduledDate(_occurredAt, {
+            'frequency': 'monthly',
+            'anchorDay': _occurredAt.day,
+          })
+        : DateTime.now();
+    bool choseDate = false;
+    final originalDate = scheduledDate(nextDate);
+    final originalFrequency = frequency;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Guardar plantilla'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  initialValue: name,
+                  decoration: const InputDecoration(
+                    labelText: 'Nombre de la plantilla',
+                  ),
+                  onChanged: (value) => update(() => name = value),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Recordar importe'),
+                  value: includeAmount,
+                  onChanged: automatic
+                      ? null
+                      : (value) => update(() => includeAmount = value ?? false),
+                ),
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Preparar pagos pendientes'),
+                  value: automatic,
+                  onChanged: (value) => update(() {
+                    automatic = value ?? false;
+                    if (automatic) includeAmount = true;
+                  }),
+                ),
+                if (automatic) ...[
+                  DropdownButtonFormField<String>(
+                    initialValue: frequency,
+                    decoration: const InputDecoration(labelText: 'Frecuencia'),
+                    items: const [
+                      DropdownMenuItem(
+                        value: 'monthly',
+                        child: Text('Mensual'),
+                      ),
+                      DropdownMenuItem(value: 'yearly', child: Text('Anual')),
+                    ],
+                    onChanged: (value) => update(() {
+                      frequency = value!;
+                      if (afterRegistration &&
+                          _templateSchedule == null &&
+                          !choseDate) {
+                        nextDate = nextScheduledDate(_occurredAt, {
+                          'frequency': frequency,
+                          'anchorDay': _occurredAt.day,
+                          'anchorMonth': _occurredAt.month,
+                        });
+                      }
+                    }),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Próxima fecha'),
+                    subtitle: Text(scheduledDate(nextDate)),
+                    trailing: const Icon(Icons.calendar_today),
+                    onTap: () async {
+                      final chosen = await showDatePicker(
+                        context: context,
+                        initialDate: nextDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime(2100),
+                      );
+                      if (chosen != null && context.mounted) {
+                        update(() {
+                          nextDate = chosen;
+                          choseDate = true;
+                        });
+                      }
+                    },
+                  ),
+                  PaymentReminderFields(
+                    value: reminderSettings,
+                    onChanged: (v) => update(() => reminderSettings = v),
+                  ),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: name.trim().isEmpty
+                  ? null
+                  : () => Navigator.pop(context, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (accepted != true || !mounted) return null;
+    try {
+      final amount = includeAmount
+          ? Money.parse(_amount.text).minorUnits
+          : null;
+      if (amount != null && amount <= 0) {
+        throw const FormatException('El importe debe ser mayor que cero.');
+      }
+      return (
+        name: name,
+        fields: <String, dynamic>{
+          'schedule': {
+            'enabled': automatic,
+            'paused':
+                !automatic &&
+                (_templateSchedule?['enabled'] == true ||
+                    _templateSchedule?['paused'] == true),
+            'frequency': frequency,
+            'nextDate': scheduledDate(nextDate),
+            'anchorDay':
+                afterRegistration && _templateSchedule == null && !choseDate
+                ? _occurredAt.day
+                : originalDate == scheduledDate(nextDate) &&
+                      originalFrequency == frequency
+                ? (_templateSchedule?['anchorDay'] ?? nextDate.day)
+                : nextDate.day,
+            'anchorMonth':
+                afterRegistration && _templateSchedule == null && !choseDate
+                ? _occurredAt.month
+                : originalDate == scheduledDate(nextDate) &&
+                      originalFrequency == frequency
+                ? (_templateSchedule?['anchorMonth'] ?? nextDate.month)
+                : nextDate.month,
+          },
+          'type': _type.name,
+          'amountMinor': amount,
+          'from': _needsFrom ? _from : null,
+          'to': _needsTo ? _to : null,
+          'category': _category,
+          'merchant': _merchant.text.trim(),
+          'merchantId': _selectedMerchant?.name == _merchant.text
+              ? _selectedMerchant?.id
+              : null,
+          'note': _note.text.trim(),
+          'channel': _channel.name,
+          'installments': _installments,
+          'installmentCount': _installmentCount,
+          'reminders': reminderSettings.toJson(),
+          'splitEnabled': includeAmount && _splitEnabled,
+          'splits': [
+            if (includeAmount && _splitEnabled)
+              for (final split in _splits)
+                {
+                  'category': split.categoryId,
+                  'amountMinor': Money.parse(split.amount.text).minorUnits,
+                },
+          ],
+        },
+      );
+    } catch (error) {
+      if (mounted) _message('$error');
+      return null;
+    }
+  }
+
+  Future<void> _saveTemplate() async {
+    setState(() => _saving = true);
+    try {
+      final template = await _collectTemplate();
+      if (template == null || !mounted) return;
+      await ref.read(databaseProvider).transaction(() async {
+        if (_bookGeneration != ref.read(databaseProvider).restoreGeneration) {
+          throw StateError(
+            'La base cambió. Cerrá el formulario y volvé a abrirlo.',
+          );
+        }
+        await ref
+            .read(manualTemplateServiceProvider)
+            .save(
+              template.name,
+              template.fields,
+              id: widget.editTemplate ? widget.savedTemplateId : null,
+            );
+      });
+      if ((template.fields['schedule'] as Map?)?['enabled'] == true &&
+          (template.fields['reminders'] as Map?)?['enabled'] == true) {
+        await _requestReminderPermission();
+      }
+      if (mounted) {
+        _message('Plantilla guardada.');
+        setState(() {
+          _baseline = _draftSnapshot;
+          _saving = false;
+        });
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted && widget.editTemplate) context.pop();
+      }
+    } catch (error) {
+      if (mounted) _message('$error');
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _useTemplate() async {
+    final templates = await ref.read(manualTemplateServiceProvider).list();
+    if (!mounted) return;
+    templates.sort((a, b) {
+      final aMatches = a.fields['type'] == _type.name;
+      final bMatches = b.fields['type'] == _type.name;
+      if (aMatches != bMatches) return aMatches ? -1 : 1;
+      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+    });
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(context).height * .6,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Text(
+                  'Usar plantilla',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              Expanded(
+                child: templates.isEmpty
+                    ? const Center(
+                        child: Text('Todavía no guardaste plantillas.'),
+                      )
+                    : ListView(
+                        children: [
+                          for (final template in templates)
+                            ListTile(
+                              title: Text(template.name),
+                              subtitle: Text(
+                                '${templateMovementLabel(template)} · ${templateScheduleLabel(context, template)}',
+                              ),
+                              trailing: const Icon(Icons.chevron_right),
+                              onTap: () => Navigator.pop(context, template.id),
+                            ),
+                        ],
+                      ),
+              ),
+              TextButton.icon(
+                onPressed: () => Navigator.pop(context, '__manage__'),
+                icon: const Icon(Icons.tune),
+                label: const Text(
+                  'Administrar plantillas y registros programados',
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    if (selected == '__manage__') {
+      context.push('/templates');
+      return;
+    }
+    for (final split in _splits) {
+      split.dispose();
+    }
+    setState(() {
+      _splits.clear();
+      _selectedMerchant = null;
+      _templateSchedule = null;
+      _alsoSaveTemplate = false;
+      _occurredAt = DateTime.now();
+      _firstInstallmentDate = null;
+    });
+    await _loadSavedTemplate(selected);
+  }
+
+  bool get _needsFrom =>
+      _type == TransactionType.expense || _type == TransactionType.transfer;
+  bool get _needsTo =>
+      _type == TransactionType.income || _type == TransactionType.transfer;
+
+  bool _categoryMatchesType(CategoryRecord category) =>
+      category.kind == 'both' ||
+      (_type == TransactionType.income
+          ? category.kind == 'income'
+          : category.kind == 'expense');
+
+  bool _isCreditExpense(List<AccountRecord> accounts) =>
+      _type == TransactionType.expense &&
+      accounts.where((account) => account.id == _from).firstOrNull?.type ==
+          AccountType.creditCard.name;
+
+  Future<void> _save(List<AccountRecord> accounts) async {
+    if (!_formKey.currentState!.validate()) return;
+    if (_needsFrom && _from == null || _needsTo && _to == null) {
+      _message('Seleccioná las cuentas necesarias.');
+      return;
+    }
+    try {
+      setState(() => _saving = true);
+      final pendingPlan =
+          _installments &&
+          _type == TransactionType.expense &&
+          !_isCreditExpense(accounts) &&
+          widget.editId == null;
+      final template = _alsoSaveTemplate && !pendingPlan
+          ? await _collectTemplate(afterRegistration: true)
+          : null;
+      if (!mounted) return;
+      if (_alsoSaveTemplate && template == null) {
+        setState(() => _saving = false);
+        return;
+      }
+      final money = Money.parse(_amount.text);
+      if (_installments &&
+          _type == TransactionType.expense &&
+          (money.minorUnits < _installmentCount ||
+              _installmentCount < 2 ||
+              _installmentCount > 120))
+        throw const FormatException('Importe o cuotas inválidos.');
+      if (pendingPlan && _merchant.text.trim().isEmpty)
+        throw const FormatException('Ingresá una descripción.');
+      await ref.read(databaseProvider).transaction(() async {
+        if (_bookGeneration != ref.read(databaseProvider).restoreGeneration) {
+          throw StateError(
+            'Los datos fueron restaurados. Cancelá y volvé a abrir el formulario.',
+          );
+        }
+        String? merchantId;
+        if (_merchant.text.trim().isNotEmpty) {
+          if (_type == TransactionType.expense &&
+              _selectedMerchant?.name == _merchant.text) {
+            final selected =
+                await (ref
+                        .read(databaseProvider)
+                        .select(ref.read(databaseProvider).merchants)
+                      ..where((t) => t.id.equals(_selectedMerchant!.id)))
+                    .getSingle();
+            if (selected.isArchived && selected.id != _originalMerchantId) {
+              throw StateError('El comercio está archivado.');
+            }
+            merchantId = selected.id;
+          } else {
+            merchantId = await ref
+                .read(merchantServiceProvider)
+                .findOrCreate(_merchant.text);
+          }
+        }
+        final splits = <SplitDraft>[];
+        if (_type != TransactionType.transfer) {
+          if (_splitEnabled) {
+            for (final input in _splits) {
+              if (input.categoryId == null) {
+                throw const FormatException('Elegí todas las categorías.');
+              }
+              splits.add(
+                SplitDraft(
+                  categoryId: input.categoryId!,
+                  amountMinor: Money.parse(input.amount.text).minorUnits,
+                ),
+              );
+            }
+          } else if (_category != null) {
+            splits.add(
+              SplitDraft(categoryId: _category!, amountMinor: money.minorUnits),
+            );
+          }
+        }
+        if (_type == TransactionType.expense &&
+            merchantId != null &&
+            !_splitEnabled &&
+            (_category == null ||
+                ref
+                        .read(categoriesProvider)
+                        .value
+                        ?.any((c) => c.id == _category) ==
+                    true)) {
+          await ref
+              .read(merchantServiceProvider)
+              .rememberCategory(merchantId, _category);
+        }
+        if (pendingPlan) {
+          await ref
+              .read(pendingPaymentServiceProvider)
+              .createPlan(
+                amountMinor: money.minorUnits,
+                installmentCount: _installmentCount,
+                firstDueDate: _firstInstallmentDate ?? _occurredAt,
+                accountId: _from!,
+                merchantId: merchantId,
+                description: _merchant.text.trim(),
+                note: _note.text,
+                paymentChannel: _channel,
+                splits: splits,
+                reminders: _reminders,
+                occurredAt: _occurredAt,
+                expectedBookGeneration: _bookGeneration,
+              );
+          return;
+        }
+        String? templateId;
+        Map<String, dynamic>? schedule;
+        if (template != null) {
+          final fields = {...template.fields, 'merchantId': merchantId};
+          templateId = await ref
+              .read(manualTemplateServiceProvider)
+              .save(template.name, fields);
+          schedule = Map<String, dynamic>.from(fields['schedule'] as Map);
+        }
+        final consumesDue =
+            schedule?['enabled'] == true &&
+            schedule?['nextDate'] == scheduledDate(_occurredAt);
+        final draft = TransactionDraft(
+          type: _type,
+          amount: money,
+          occurredAt: _occurredAt,
+          fromAccountId: _needsFrom ? _from : null,
+          toAccountId: _needsTo ? _to : null,
+          merchantId: merchantId,
+          description: _merchant.text.trim(),
+          note: _note.text,
+          paymentChannel: _channel,
+          splits: splits,
+          externalFingerprint: consumesDue
+              ? 'scheduled:$templateId:${scheduledDate(_occurredAt)}'
+              : null,
+          sourceReference: templateId,
+        );
+        final ledger = ref.read(ledgerServiceProvider);
+        final String id;
+        if (widget.editId != null) {
+          id = widget.editId!;
+          await ledger.update(
+            id,
+            draft,
+            expectedUpdatedAt: _editingUpdatedAt,
+            installmentCount: _installments ? _installmentCount : null,
+            preserveInstallments: false,
+            firstInstallmentDate: _firstInstallmentDate ?? _occurredAt,
+          );
+        } else {
+          id = await ledger.create(draft);
+        }
+        if (_installments &&
+            _type == TransactionType.expense &&
+            widget.editId == null) {
+          await ref
+              .read(installmentServiceProvider)
+              .attachPlan(
+                transactionId: id,
+                count: _installmentCount,
+                firstPeriod: _firstInstallmentDate ?? _occurredAt,
+              );
+        }
+        if (consumesDue &&
+            template != null &&
+            templateId != null &&
+            schedule != null) {
+          schedule['nextDate'] = scheduledDate(
+            nextScheduledDate(
+              parseScheduledDate(schedule['nextDate'] as String),
+              schedule,
+            ),
+          );
+          await ref.read(manualTemplateServiceProvider).save(template.name, {
+            ...template.fields,
+            'merchantId': merchantId,
+            'schedule': schedule,
+          }, id: templateId);
+        }
+      });
+      if ((pendingPlan && _reminders.enabled) ||
+          ((template?.fields['schedule'] as Map?)?['enabled'] == true &&
+              (template?.fields['reminders'] as Map?)?['enabled'] == true)) {
+        await _requestReminderPermission();
+      }
+      if (!mounted) return;
+      final settings = ref.read(settingsProvider);
+      if (_from != null) {
+        await settings.write('last_from_${_type.name}', _from!);
+      }
+      if (_to != null) await settings.write('last_to_${_type.name}', _to!);
+      HapticFeedback.lightImpact();
+      if (!mounted) return;
+      if (_saveAnother) {
+        _amount.clear();
+        _merchant.clear();
+        _selectedMerchant = null;
+        _alsoSaveTemplate = false;
+        _templateName = '';
+        _note.clear();
+        setState(() {
+          _saving = false;
+          _baseline = _draftSnapshot;
+        });
+        _message('Movimiento guardado.');
+      } else {
+        setState(() {
+          _saving = false;
+          _baseline = _draftSnapshot;
+        });
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted) context.pop();
+      }
+    } catch (error) {
+      _message('$error');
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  Future<void> _requestReminderPermission() async {
+    try {
+      final allowed = await ref
+          .read(paymentReminderBridgeProvider)
+          .requestPermission();
+      if (!allowed && mounted) _message('Guardado. Recordatorios sin permiso.');
+    } catch (_) {
+      if (mounted) _message('Guardado. Recordatorios no disponibles.');
+    }
+  }
+
+  Future<void> _pickDate() async {
+    final value = await showDatePicker(
+      context: context,
+      initialDate: _occurredAt,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now().add(const Duration(days: 365)),
+    );
+    if (value != null && mounted) {
+      setState(() {
+        final old = _occurredAt;
+        if (_firstInstallmentDate != null &&
+            _firstInstallmentDate!.year == old.year &&
+            _firstInstallmentDate!.month == old.month &&
+            _firstInstallmentDate!.day == old.day) {
+          _firstInstallmentDate = DateTime.utc(
+            value.year,
+            value.month,
+            value.day,
+            12,
+          );
+        }
+        _occurredAt = DateTime(
+          value.year,
+          value.month,
+          value.day,
+          _occurredAt.hour,
+          _occurredAt.minute,
+        );
+      });
+    }
+  }
+
+  Future<void> _createCategory(List<CategoryRecord> categories) async {
+    final controller = TextEditingController();
+    final value = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Nueva categoría'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: 'Nombre'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancelar'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text),
+            child: const Text('Crear'),
+          ),
+        ],
+      ),
+    );
+    if (value == null || !mounted) return;
+    try {
+      final id = await ref
+          .read(categoryServiceProvider)
+          .create(
+            value,
+            kind: _type == TransactionType.income ? 'income' : 'expense',
+          );
+      if (mounted) {
+        setState(() {
+          _awaitingCategory = id;
+          _category = id;
+        });
+      }
+    } catch (error) {
+      _message('$error');
+    }
+  }
+
+  void _toggleSplits(List<CategoryRecord> categories) {
+    setState(() {
+      _splitEnabled = !_splitEnabled;
+      if (_splitEnabled && _splits.isEmpty) {
+        _splits.addAll([
+          _SplitInput(
+            categoryId:
+                _category ??
+                categories.where(_categoryMatchesType).firstOrNull?.id,
+          ),
+          _SplitInput(),
+        ]);
+      }
+    });
+  }
+
+  void _applyTemplate(String template, List<AccountRecord> accounts) {
+    if (!mounted) return;
+    setState(() {
+      if (template == 'cardPayment') {
+        _type = TransactionType.transfer;
+        _from = accounts
+            .where((account) => account.type == AccountType.bank.name)
+            .firstOrNull
+            ?.id;
+        _to ??= accounts
+            .where((account) => account.type == AccountType.creditCard.name)
+            .firstOrNull
+            ?.id;
+      }
+      _baseline = _draftSnapshot;
+    });
+  }
+
+  Future<void> _loadClone(String id) async {
+    final database = ref.read(databaseProvider);
+    setState(() => _loadingTemplate = true);
+    try {
+      final row = await (database.select(
+        database.ledgerTransactions,
+      )..where((t) => t.id.equals(id))).getSingleOrNull();
+      if (row == null || row.status != 'confirmed') {
+        throw StateError('El movimiento ya no está disponible.');
+      }
+      final splits = await (database.select(
+        database.transactionSplits,
+      )..where((t) => t.transactionId.equals(id))).get();
+      final plan = await (database.select(
+        database.installmentPlans,
+      )..where((t) => t.transactionId.equals(id))).getSingleOrNull();
+      final merchant = row.merchantId == null
+          ? null
+          : await (database.select(
+              database.merchants,
+            )..where((t) => t.id.equals(row.merchantId!))).getSingleOrNull();
+      final oldAccounts =
+          await (database.select(database.accounts)..where(
+                (t) => t.id.isIn(
+                  [row.fromAccountId, row.toAccountId].whereType<String>(),
+                ),
+              ))
+              .get();
+      final oldCategories = await (database.select(
+        database.categories,
+      )..where((t) => t.id.isIn(splits.map((s) => s.categoryId)))).get();
+      if (!mounted) return;
+      setState(() {
+        _editingAccounts = oldAccounts;
+        _editingCategories = oldCategories;
+        _type = TransactionType.values.byName(row.type);
+        _amount.text = Money(row.amountMinor).format(withCode: false).trim();
+        _originalMerchantId = widget.editId != null ? row.merchantId : null;
+        _selectedMerchant =
+            widget.editId != null || merchant?.isArchived == false
+            ? merchant
+            : null;
+        _merchant.text = _selectedMerchant?.name ?? row.description;
+        _note.text = row.note;
+        _from = row.fromAccountId;
+        _to = row.toAccountId;
+        _channel = PaymentChannel.values.byName(row.paymentChannel);
+        _occurredAt = widget.editId != null
+            ? row.occurredAt.toLocal()
+            : DateTime.now();
+        _editingUpdatedAt = row.updatedAt;
+        _installments = plan != null;
+        _installmentCount = plan?.installmentCount ?? 2;
+        _firstInstallmentDate = widget.editId != null
+            ? plan?.firstPeriod.toUtc()
+            : null;
+        _splitEnabled = splits.length > 1;
+        _category = splits.length == 1 ? splits.single.categoryId : null;
+        for (final split in splits.where((_) => _splitEnabled)) {
+          _splits.add(
+            _SplitInput(categoryId: split.categoryId)
+              ..amount.text = Money(split.amountMinor)
+                  .format(withCode: false)
+                  .trim(),
+          );
+        }
+        _advanced = true;
+        _baseline = _draftSnapshot;
+      });
+    } catch (error) {
+      if (mounted) _templateError = '$error';
+    } finally {
+      if (mounted) setState(() => _loadingTemplate = false);
+    }
+  }
+
+  String _channelLabel(PaymentChannel channel) => switch (channel) {
+    PaymentChannel.cash => 'Efectivo',
+    PaymentChannel.physicalCard => 'Tarjeta física',
+    PaymentChannel.debitCard => 'Tarjeta de débito',
+    PaymentChannel.physicalCreditCard => 'Tarjeta de crédito física',
+    PaymentChannel.googleWalletContactless => 'Google Wallet',
+    PaymentChannel.onlineCard => 'Pago online',
+    PaymentChannel.bankTransfer => 'Transferencia',
+    PaymentChannel.other => 'Otro',
+  };
+
+  void _message(String text) {
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
+    }
+  }
+}
+
+final class _AccountField extends StatelessWidget {
+  const _AccountField({
+    required this.label,
+    required this.value,
+    required this.accounts,
+    required this.onChanged,
+    this.excludedId,
+  });
+
+  final String label;
+  final String? value;
+  final List<AccountRecord> accounts;
+  final ValueChanged<String?> onChanged;
+  final String? excludedId;
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<String>(
+    key: ValueKey((
+      label,
+      value,
+      excludedId,
+      accounts.map((row) => row.id).join(','),
+    )),
+    initialValue: accounts.any((row) => row.id == value && row.id != excludedId)
+        ? value
+        : null,
+    decoration: InputDecoration(labelText: label),
+    items: [
+      for (final account in accounts.where(
+        (account) => account.id != excludedId,
+      ))
+        DropdownMenuItem(value: account.id, child: Text(account.name)),
+    ],
+    onChanged: onChanged,
+  );
+}
+
+final class _SplitInput {
+  _SplitInput({this.categoryId}) : amount = TextEditingController();
+
+  String? categoryId;
+  final TextEditingController amount;
+
+  void dispose() => amount.dispose();
+}
+
+FILE lib/features/payments/presentation/payments_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../app/providers.dart';
+import '../../../core/money/money.dart';
+import '../../../core/money/pyg_input_formatter.dart';
+import '../domain/pending_payment_models.dart';
+import 'payment_reminder_fields.dart';
+
+class PaymentsScreen extends ConsumerStatefulWidget {
+  const PaymentsScreen({super.key});
+  @override
+  ConsumerState<PaymentsScreen> createState() => _PaymentsScreenState();
+}
+
+class _PaymentsScreenState extends ConsumerState<PaymentsScreen> {
+  String _filter = 'pending';
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Pagos pendientes')),
+    body: Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(8),
+          child: Wrap(
+            spacing: 8,
+            children: [
+              for (final entry in const {
+                'pending': 'Pendientes',
+                'paid': 'Con pagos',
+                'all': 'Todos',
+              }.entries)
+                ChoiceChip(
+                  label: Text(entry.value),
+                  selected: _filter == entry.key,
+                  onSelected: (_) => setState(() => _filter = entry.key),
+                ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: ref
+              .watch(pendingPaymentsProvider)
+              .when(
+                loading: () => const Center(child: CircularProgressIndicator()),
+                error: (e, _) => Center(child: Text('$e')),
+                data: (rows) {
+                  final payments = rows
+                      .where(
+                        (p) =>
+                            _filter == 'all' ||
+                            (_filter == 'paid'
+                                ? p.paidMinor > 0
+                                : !p.cancelled && p.remainingMinor > 0),
+                      )
+                      .toList();
+                  if (payments.isEmpty) {
+                    return Center(
+                      child: Text(
+                        _filter == 'pending'
+                            ? 'Sin pagos pendientes'
+                            : 'Sin pagos en esta vista',
+                      ),
+                    );
+                  }
+                  return ListView.builder(
+                    itemCount: payments.length,
+                    itemBuilder: (context, i) {
+                      final p = payments[i];
+                      return ListTile(
+                        title: Text(
+                          p.description.isEmpty
+                              ? 'Pago pendiente'
+                              : p.description,
+                        ),
+                        subtitle: Text(
+                          '${MaterialLocalizations.of(context).formatShortDate(p.dueDate)} · ${p.installmentNumber}/${p.installmentCount}\n${p.cancelled
+                              ? 'Cancelado'
+                              : p.remainingMinor <= 0
+                              ? 'Pagado'
+                              : Money(p.remainingMinor, currencyCode: 'PYG').format()}',
+                        ),
+                        onTap: () => context.push('/payments/${p.id}'),
+                      );
+                    },
+                  );
+                },
+              ),
+        ),
+      ],
+    ),
+  );
+}
+
+class PaymentDetailScreen extends ConsumerStatefulWidget {
+  const PaymentDetailScreen({required this.paymentId, super.key});
+  final String paymentId;
+  @override
+  ConsumerState<PaymentDetailScreen> createState() =>
+      _PaymentDetailScreenState();
+}
+
+class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
+  final _amount = TextEditingController();
+  late final int _bookGeneration;
+  int? _loadedRevision;
+  String? _account;
+  DateTime _paidAt = DateTime.now();
+  bool _carry = false, _busy = false;
+  @override
+  void initState() {
+    super.initState();
+    _bookGeneration = ref.read(databaseProvider).restoreGeneration;
+  }
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  void _message(Object error) {
+    if (mounted)
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('$error')));
+  }
+
+  Future<void> _run(Future<void> Function() action) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      await action();
+    } catch (e) {
+      _message(e);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  String _money(int value) => Money(value, currencyCode: 'PYG').format();
+  String _date(DateTime value) =>
+      MaterialLocalizations.of(context).formatShortDate(value);
+  Future<DateTime?> _pickDate(DateTime value) => showDatePicker(
+    context: context,
+    initialDate: value,
+    firstDate: DateTime(2000),
+    lastDate: DateTime(2100),
+  );
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Detalle de pago')),
+    body: ref
+        .watch(pendingPaymentsProvider)
+        .when(
+          loading: () => const Center(child: CircularProgressIndicator()),
+          error: (e, _) => Center(child: Text('$e')),
+          data: (rows) {
+            final matches = rows.where((p) => p.id == widget.paymentId);
+            if (matches.isEmpty)
+              return const Center(child: Text('Pago no disponible'));
+            final p = matches.first;
+            if (_loadedRevision != p.revision) {
+              _loadedRevision = p.revision;
+              _amount.text = p.remainingMinor > 0
+                  ? Money(p.remainingMinor).format(withCode: false).trim()
+                  : '';
+              _account = p.accountId;
+              _carry = false;
+            }
+            final hasNext = rows.any(
+              (q) =>
+                  q.planId == p.planId &&
+                  q.installmentNumber > p.installmentNumber &&
+                  !q.cancelled &&
+                  q.remainingMinor > 0,
+            );
+            final payable = !p.cancelled && p.remainingMinor > 0;
+            return ListView(
+              padding: const EdgeInsets.all(16),
+              children: [
+                Text(
+                  p.description.isEmpty ? 'Pago pendiente' : p.description,
+                  style: Theme.of(context).textTheme.headlineSmall,
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(
+                    'Cuota ${p.installmentNumber}/${p.installmentCount}',
+                  ),
+                  subtitle: Text(_date(p.dueDate)),
+                ),
+                Text('Previsto: ${_money(p.amountMinor)}'),
+                Text('Pagado: ${_money(p.paidMinor)}'),
+                Text(
+                  p.cancelled
+                      ? 'Cancelado'
+                      : 'Pendiente: ${_money(p.remainingMinor)}',
+                ),
+                if (p.data['carriedTo'] != null)
+                  TextButton(
+                    onPressed: () =>
+                        context.push('/payments/${p.data['carriedTo']}'),
+                    child: const Text('Ver cuota con resto trasladado'),
+                  ),
+                for (final payment in p.effectivePayments ?? p.payments)
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(_money(payment['amountMinor'] as int)),
+                    subtitle: Text(
+                      _date(DateTime.parse(payment['paidAt'] as String)),
+                    ),
+                    onTap: () => context.push(
+                      '/transactions/new?edit=${payment['transactionId']}',
+                    ),
+                  ),
+                if (payable) ...[
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    key: const ValueKey('paid-amount'),
+                    controller: _amount,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [PygInputFormatter()],
+                    decoration: const InputDecoration(
+                      labelText: 'Importe pagado',
+                    ),
+                  ),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Fecha de pago'),
+                    subtitle: Text(_date(_paidAt)),
+                    onTap: _busy
+                        ? null
+                        : () async {
+                            final date = await _pickDate(_paidAt);
+                            if (date != null && mounted)
+                              setState(() => _paidAt = date);
+                          },
+                  ),
+                  ref
+                      .watch(accountsProvider)
+                      .when(
+                        loading: () => const LinearProgressIndicator(),
+                        error: (e, _) => Text('$e'),
+                        data: (all) {
+                          final accounts = all
+                              .where(
+                                (a) =>
+                                    !a.isArchived &&
+                                    a.type != 'creditCard' &&
+                                    a.currencyCode == 'PYG',
+                              )
+                              .toList();
+                          final selected = accounts.any((a) => a.id == _account)
+                              ? _account
+                              : null;
+                          return DropdownButtonFormField<String>(
+                            key: ValueKey('account-$selected'),
+                            initialValue: selected,
+                            isExpanded: true,
+                            decoration: const InputDecoration(
+                              labelText: 'Cuenta',
+                            ),
+                            items: [
+                              for (final a in accounts)
+                                DropdownMenuItem(
+                                  value: a.id,
+                                  child: Text(a.name),
+                                ),
+                            ],
+                            onChanged: _busy
+                                ? null
+                                : (v) => setState(() => _account = v),
+                          );
+                        },
+                      ),
+                  if (hasNext)
+                    CheckboxListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('Trasladar resto a la siguiente cuota'),
+                      value: _carry,
+                      onChanged: _busy
+                          ? null
+                          : (v) => setState(() => _carry = v ?? false),
+                    ),
+                  const SizedBox(height: 16),
+                  FilledButton(
+                    onPressed: _busy
+                        ? null
+                        : () => _run(() async {
+                            if (_account == null)
+                              throw StateError('Elegí una cuenta.');
+                            await ref
+                                .read(pendingPaymentServiceProvider)
+                                .pay(
+                                  id: p.id,
+                                  expectedRevision: p.revision,
+                                  amountMinor: Money.parse(_amount.text)
+                                      .minorUnits,
+                                  paidAt: _paidAt,
+                                  accountId: _account!,
+                                  carryRemainder: hasNext && _carry,
+                                  expectedBookGeneration: _bookGeneration,
+                                );
+                          }),
+                    child: const Text('Confirmar pago'),
+                  ),
+                  if (p.paidMinor == 0)
+                    TextButton(
+                      onPressed: _busy ? null : () => _edit(p),
+                      child: const Text('Editar pendiente'),
+                    ),
+                  TextButton(
+                    onPressed: _busy ? null : () => _reminders(p),
+                    child: const Text('Recordatorios'),
+                  ),
+                  TextButton(
+                    onPressed: _busy ? null : () => _cancel(p),
+                    child: const Text('Cancelar pendiente'),
+                  ),
+                ],
+              ],
+            );
+          },
+        ),
+  );
+  Future<void> _cancel(PendingPayment p) async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Cancelar pendiente'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Volver'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Confirmar cancelación'),
+          ),
+        ],
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(
+        () => ref
+            .read(pendingPaymentServiceProvider)
+            .cancel(
+              p.id,
+              expectedRevision: p.revision,
+              expectedBookGeneration: _bookGeneration,
+            ),
+      );
+    }
+  }
+
+  Future<void> _edit(PendingPayment p) async {
+    final amount = TextEditingController(
+      text: Money(p.amountMinor).format(withCode: false).trim(),
+    );
+    var due = p.dueDate, following = false;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Editar pendiente'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextField(
+                  controller: amount,
+                  keyboardType: TextInputType.number,
+                  inputFormatters: [PygInputFormatter()],
+                  decoration: const InputDecoration(
+                    labelText: 'Importe previsto',
+                  ),
+                ),
+                ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Vencimiento'),
+                  subtitle: Text(_date(due)),
+                  onTap: () async {
+                    final date = await _pickDate(due);
+                    if (date != null && context.mounted)
+                      update(() => due = date);
+                  },
+                ),
+                if (p.installmentNumber < p.installmentCount)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Esta cuota y las siguientes'),
+                    value: following,
+                    onChanged: (v) => update(() => following = v ?? false),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(
+        () => ref
+            .read(pendingPaymentServiceProvider)
+            .edit(
+              id: p.id,
+              expectedRevision: p.revision,
+              amountMinor: Money.parse(amount.text).minorUnits,
+              dueDate: due,
+              following: following,
+              expectedBookGeneration: _bookGeneration,
+            ),
+      );
+    }
+    // The dialog route may still be animating when its future completes.
+    WidgetsBinding.instance.addPostFrameCallback((_) => amount.dispose());
+  }
+
+  Future<void> _reminders(PendingPayment p) async {
+    var settings = p.reminders, following = true;
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, update) => AlertDialog(
+          title: const Text('Recordatorios'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                PaymentReminderFields(
+                  value: settings,
+                  onChanged: (v) => update(() => settings = v),
+                ),
+                if (p.installmentNumber < p.installmentCount)
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('Esta cuota y las siguientes'),
+                    value: following,
+                    onChanged: (v) => update(() => following = v ?? false),
+                  ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('Cancelar'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('Guardar'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (accepted == true && mounted) {
+      await _run(() async {
+        await ref
+            .read(pendingPaymentServiceProvider)
+            .updateReminders(
+              p.id,
+              expectedRevision: p.revision,
+              settings: settings,
+              following: following,
+              expectedBookGeneration: _bookGeneration,
+            );
+        if (settings.enabled) {
+          try {
+            if (!await ref
+                .read(paymentReminderBridgeProvider)
+                .requestPermission()) {
+              _message('Guardado. Recordatorios sin permiso.');
+            }
+          } catch (_) {
+            _message('Guardado. Recordatorios no disponibles.');
+          }
+        }
+      });
+    }
+  }
+}
+
+FILE lib/features/payments/presentation/payment_reminder_fields.dart
+import 'package:flutter/material.dart';
+
+import '../domain/pending_payment_models.dart';
+
+class PaymentReminderFields extends StatelessWidget {
+  const PaymentReminderFields({
+    required this.value,
+    required this.onChanged,
+    super.key,
+  });
+  final PaymentReminderSettings value;
+  final ValueChanged<PaymentReminderSettings> onChanged;
+  void change({bool? enabled, int? days, int? hour, int? minute, bool? due}) =>
+      onChanged(
+        PaymentReminderSettings(
+          enabled: enabled ?? value.enabled,
+          daysBefore: days ?? value.daysBefore,
+          hour: hour ?? value.hour,
+          minute: minute ?? value.minute,
+          onDueDate: due ?? value.onDueDate,
+        ),
+      );
+  @override
+  Widget build(BuildContext context) => Column(
+    children: [
+      SwitchListTile(
+        contentPadding: EdgeInsets.zero,
+        title: const Text('Recordatorios'),
+        value: value.enabled,
+        onChanged: (v) => change(enabled: v),
+      ),
+      if (value.enabled) ...[
+        DropdownButtonFormField<int>(
+          initialValue: value.daysBefore,
+          isExpanded: true,
+          decoration: const InputDecoration(labelText: 'Días antes'),
+          items: [
+            for (var i = 0; i <= 60; i++)
+              DropdownMenuItem(value: i, child: Text('$i')),
+          ],
+          onChanged: (v) => change(days: v),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('El día del vencimiento'),
+          value: value.onDueDate,
+          onChanged: (v) => change(due: v),
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('Hora'),
+          trailing: Text(
+            '${value.hour.toString().padLeft(2, '0')}:${value.minute.toString().padLeft(2, '0')}',
+          ),
+          onTap: () async {
+            final t = await showTimePicker(
+              context: context,
+              initialTime: TimeOfDay(hour: value.hour, minute: value.minute),
+            );
+            if (t != null) change(hour: t.hour, minute: t.minute);
+          },
+        ),
+      ],
+    ],
+  );
+}
+
+FILE lib/features/templates/templates_screen.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../app/providers.dart';
+import '../../shared/widgets/async_value_view.dart';
+import 'manual_template_service.dart';
+import 'template_summary.dart';
+
+final class TemplatesScreen extends ConsumerStatefulWidget {
+  const TemplatesScreen({this.scheduledOnly = false, super.key});
+  final bool scheduledOnly;
+  @override
+  ConsumerState<TemplatesScreen> createState() => _TemplatesScreenState();
+}
+
+class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
+  late bool scheduledOnly = widget.scheduledOnly;
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(
+      title: const Text('Plantillas'),
+      bottom: PreferredSize(
+        preferredSize: const Size.fromHeight(64),
+        child: Padding(
+          padding: const EdgeInsets.all(8),
+          child: SegmentedButton<bool>(
+            segments: const [
+              ButtonSegment(value: false, label: Text('Todas')),
+              ButtonSegment(value: true, label: Text('Programadas')),
+            ],
+            selected: {scheduledOnly},
+            onSelectionChanged: (v) => setState(() => scheduledOnly = v.first),
+          ),
+        ),
+      ),
+    ),
+    body: AsyncValueView(
+      value: ref.watch(manualTemplatesProvider),
+      data: (allTemplates) {
+        final templates = scheduledOnly
+            ? allTemplates.where((template) {
+                final schedule = template.fields['schedule'] as Map?;
+                return schedule?['enabled'] == true ||
+                    schedule?['paused'] == true ||
+                    schedule?['pendingReason'] != null;
+              }).toList()
+            : allTemplates;
+        return templates.isEmpty
+            ? Center(
+                child: Text(
+                  scheduledOnly
+                      ? 'Sin plantillas programadas'
+                      : 'Sin plantillas',
+                ),
+              )
+            : ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  for (final template in templates)
+                    Card(
+                      child: ListTile(
+                        title: Text(template.name),
+                        subtitle: Text(
+                          templateScheduleLabel(context, template),
+                        ),
+                        onTap: () => context.push(
+                          Uri(
+                            path: '/transactions/new',
+                            queryParameters: {'savedTemplate': template.id},
+                          ).toString(),
+                        ),
+                        trailing: PopupMenuButton<String>(
+                          tooltip: 'Opciones de plantilla',
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'edit',
+                              child: Text('Editar'),
+                            ),
+                            if ((template.fields['schedule']
+                                    as Map?)?['enabled'] ==
+                                true)
+                              const PopupMenuItem(
+                                value: 'pause',
+                                child: Text('Pausar programación'),
+                              ),
+                            if ((template.fields['schedule']
+                                    as Map?)?['pendingReason'] !=
+                                null)
+                              const PopupMenuItem(
+                                value: 'skip',
+                                child: Text('Omitir este vencimiento'),
+                              ),
+                            const PopupMenuItem(
+                              value: 'delete',
+                              child: Text('Eliminar'),
+                            ),
+                          ],
+                          onSelected: (action) async {
+                            if (action == 'edit') {
+                              context.push(
+                                Uri(
+                                  path: '/transactions/new',
+                                  queryParameters: {
+                                    'savedTemplate': template.id,
+                                    'editTemplate': 'true',
+                                  },
+                                ).toString(),
+                              );
+                            } else if (action == 'delete') {
+                              await _deleteTemplate(context, ref, template);
+                            } else {
+                              await _scheduleAction(
+                                context,
+                                ref,
+                                template.id,
+                                skip: action == 'skip',
+                              );
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                ],
+              );
+      },
+    ),
+    floatingActionButton: FloatingActionButton.extended(
+      icon: const Icon(Icons.add),
+      label: const Text('Crear plantilla'),
+      onPressed: () => context.push('/transactions/new?editTemplate=true'),
+    ),
+  );
+  Future<void> _deleteTemplate(
+    BuildContext context,
+    WidgetRef ref,
+    ManualTemplate template,
+  ) async {
+    final service = ref.read(manualTemplateServiceProvider);
+    try {
+      await service.delete(template.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Plantilla eliminada.'),
+            action: SnackBarAction(
+              label: 'Deshacer',
+              onPressed: () async {
+                try {
+                  await service.save(
+                    template.name,
+                    template.fields,
+                    id: template.id,
+                  );
+                } catch (error) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context)
+                        .showSnackBar(SnackBar(content: Text('$error')));
+                  }
+                }
+              },
+            ),
+          ),
+        );
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+
+  Future<void> _scheduleAction(
+    BuildContext context,
+    WidgetRef ref,
+    String id, {
+    required bool skip,
+  }) async {
+    try {
+      final service = ref.read(scheduledTemplateServiceProvider);
+      if (skip) {
+        await service.skipPending(id);
+      } else {
+        await service.pause(id);
+      }
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context)
+            .showSnackBar(SnackBar(content: Text('$error')));
+      }
+    }
+  }
+}
+
+FILE lib/app/router.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../features/accounts/presentation/accounts_screen.dart';
+import '../features/reports/presentation/analysis_screen.dart';
+import '../features/credit_cards/presentation/credit_cards_screen.dart';
+import '../features/dashboard/presentation/dashboard_screen.dart';
+import '../features/onboarding/presentation/onboarding_screen.dart';
+import '../features/pending_inbox/presentation/pending_inbox_screen.dart';
+import '../features/payments/presentation/payments_screen.dart';
+import '../features/developer_tools/presentation/developer_tools_screen.dart';
+import '../features/developer_tools/presentation/active_notifications_screen.dart';
+import '../features/developer_tools/presentation/notification_diagnostics_screen.dart';
+import '../core/config/feature_flags.dart';
+import '../features/settings/presentation/settings_screen.dart';
+import '../features/settings/presentation/wallet_settings_screen.dart';
+import '../features/developer_tools/presentation/notification_simulator_screen.dart';
+import '../features/transactions/domain/ledger_models.dart';
+import '../features/transactions/presentation/transaction_form_screen.dart';
+import '../features/transactions/presentation/transactions_screen.dart';
+import '../features/templates/templates_screen.dart';
+import '../features/catalog/catalog_screen.dart';
+import '../shared/widgets/async_value_view.dart';
+import '../shared/widgets/pending_count_badge.dart';
+import 'providers.dart';
+
+final routerProvider = Provider<GoRouter>((ref) {
+  return GoRouter(
+    initialLocation: '/start',
+    routes: [
+      GoRoute(
+        path: '/start',
+        builder: (context, state) => const _StartScreen(),
+      ),
+      GoRoute(
+        path: '/onboarding',
+        builder: (context, state) => const OnboardingScreen(),
+      ),
+      StatefulShellRoute.indexedStack(
+        builder: (context, state, shell) => _AppShell(shell: shell),
+        branches: [
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/dashboard',
+                builder: (context, state) => const DashboardScreen(),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/transactions',
+                builder: (context, state) => TransactionsScreen(
+                  account: state.uri.queryParameters['account'],
+                  merchant: state.uri.queryParameters['merchant'],
+                  category: state.uri.queryParameters['category'],
+                  type: state.uri.queryParameters['type'],
+                  reportOnly: state.uri.queryParameters['report'] == 'true',
+                  withoutMerchant:
+                      state.uri.queryParameters['withoutMerchant'] == 'true',
+                  start: DateTime.tryParse(
+                    state.uri.queryParameters['start'] ?? '',
+                  ),
+                  end: DateTime.tryParse(
+                    state.uri.queryParameters['end'] ?? '',
+                  ),
+                  quotaPeriod:
+                      state.uri.queryParameters['quotaPeriod'] == 'true',
+                  unclassified:
+                      state.uri.queryParameters['unclassified'] == 'true',
+                ),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/accounts',
+                builder: (context, state) => AccountsScreen(
+                  accountId: state.uri.queryParameters['account'],
+                ),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/analysis',
+                builder: (context, state) => AnalysisScreen(
+                  reports: state.uri.queryParameters['view'] == 'reports',
+                ),
+              ),
+            ],
+          ),
+          StatefulShellBranch(
+            routes: [
+              GoRoute(
+                path: '/settings',
+                builder: (context, state) => const SettingsScreen(),
+              ),
+            ],
+          ),
+        ],
+      ),
+      GoRoute(path: '/budgets', redirect: (context, state) => '/analysis'),
+      GoRoute(
+        path: '/payments',
+        builder: (context, state) => const PaymentsScreen(),
+      ),
+      GoRoute(
+        path: '/payments/:id',
+        builder: (context, state) =>
+            PaymentDetailScreen(paymentId: state.pathParameters['id']!),
+      ),
+      GoRoute(
+        path: '/transactions/new',
+        builder: (context, state) => TransactionFormScreen(
+          initialType: _parseType(state.uri.queryParameters['type']),
+          template: state.uri.queryParameters['template'],
+          cloneId: state.uri.queryParameters['clone'],
+          editId: state.uri.queryParameters['edit'],
+          toAccountId: state.uri.queryParameters['to'],
+          savedTemplateId: state.uri.queryParameters['savedTemplate'],
+          editTemplate: state.uri.queryParameters['editTemplate'] == 'true',
+        ),
+      ),
+      GoRoute(
+        path: '/backups',
+        builder: (context, state) => const SettingsScreen(backups: true),
+      ),
+      GoRoute(
+        path: '/wallet-settings',
+        builder: (context, state) => const WalletSettingsScreen(),
+      ),
+      GoRoute(
+        path: '/catalog',
+        builder: (context, state) => const CatalogScreen(),
+      ),
+      GoRoute(
+        path: '/templates',
+        builder: (context, state) => TemplatesScreen(
+          scheduledOnly: state.uri.queryParameters['scheduled'] == 'true',
+        ),
+      ),
+      GoRoute(
+        path: '/cards',
+        builder: (context, state) => const CreditCardsScreen(),
+      ),
+      GoRoute(
+        path: '/inbox',
+        builder: (context, state) => const PendingInboxScreen(),
+      ),
+      GoRoute(
+        path: '/reports',
+        redirect: (context, state) => '/analysis?view=reports',
+      ),
+      if (developerToolsEnabled) ...[
+        GoRoute(
+          path: '/developer-tools/simulator',
+          builder: (context, state) => const NotificationSimulatorScreen(),
+        ),
+        GoRoute(
+          path: '/developer-tools/active-notifications',
+          builder: (context, state) => const ActiveNotificationsScreen(),
+        ),
+        GoRoute(
+          path: '/developer-tools',
+          builder: (context, state) => const DeveloperToolsScreen(),
+        ),
+        GoRoute(
+          path: '/developer-tools/notifications',
+          builder: (context, state) => const NotificationDiagnosticsScreen(),
+        ),
+      ],
+    ],
+  );
+});
+
+TransactionType _parseType(String? value) {
+  if (value == null) return TransactionType.expense;
+  return TransactionType.values
+          .where((type) => type.name == value)
+          .firstOrNull ??
+      TransactionType.expense;
+}
+
+final class _StartScreen extends ConsumerWidget {
+  const _StartScreen();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return AsyncValueView(
+      value: ref.watch(onboardingCompleteProvider),
+      data: (complete) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted) {
+            context.go(complete ? '/dashboard' : '/onboarding');
+          }
+        });
+        return const Scaffold(body: Center(child: CircularProgressIndicator()));
+      },
+    );
+  }
+}
+
+final class _AppShell extends StatelessWidget {
+  const _AppShell({required this.shell});
+  final StatefulNavigationShell shell;
+  static const destinations = [
+    NavigationDestination(
+      icon: PendingCountBadge(
+        showCount: false,
+        child: Icon(Icons.home_outlined),
+      ),
+      label: 'Inicio',
+    ),
+    NavigationDestination(
+      icon: Icon(Icons.receipt_long_outlined),
+      label: 'Movimientos',
+    ),
+    NavigationDestination(
+      icon: Icon(Icons.account_balance_wallet_outlined),
+      label: 'Cuentas',
+    ),
+    NavigationDestination(
+      icon: Icon(Icons.bar_chart_outlined),
+      label: 'Análisis',
+    ),
+    NavigationDestination(icon: Icon(Icons.more_horiz), label: 'Más'),
+  ];
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, c) {
+      if (c.maxWidth >= 840) {
+        return Scaffold(
+          body: SafeArea(
+            child: Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: shell.currentIndex,
+                  onDestinationSelected: (i) => shell.goBranch(i),
+                  labelType: NavigationRailLabelType.all,
+                  destinations: [
+                    for (final d in destinations)
+                      NavigationRailDestination(
+                        icon: d.icon,
+                        label: Text(d.label),
+                      ),
+                  ],
+                ),
+                Expanded(child: shell),
+              ],
+            ),
+          ),
+        );
+      }
+      return Scaffold(
+        body: shell,
+        bottomNavigationBar: NavigationBar(
+          selectedIndex: shell.currentIndex,
+          onDestinationSelected: (i) => shell.goBranch(i),
+          destinations: destinations,
+        ),
+      );
+    },
+  );
+}
+
+FILE lib/app/app.dart
+import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../core/security/app_lock_service.dart';
+import '../core/notifications/payment_reminder_coordinator.dart';
+import '../core/config/feature_flags.dart';
+import '../shared/widgets/app_lock_gate.dart';
+import 'providers.dart';
+import 'router.dart';
+import 'theme/app_theme.dart';
+
+final class FinanzasApp extends ConsumerStatefulWidget {
+  const FinanzasApp({super.key});
+
+  @override
+  ConsumerState<FinanzasApp> createState() => _FinanzasAppState();
+}
+
+class _FinanzasAppState extends ConsumerState<FinanzasApp>
+    with WidgetsBindingObserver {
+  bool _processing = false;
+  bool _initialReminderActionRead = false;
+  bool _syncingReminders = false;
+  bool _reminderRefreshRequested = false;
+  bool _refreshRequested = false;
+  final _messenger = GlobalKey<ScaffoldMessengerState>();
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    ref.read(nativeNotificationBridgeProvider).setCaptureHandler(() async {
+      if (mounted &&
+          WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed) {
+        await _ingestNativeQueue();
+      }
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) => _ingestNativeQueue());
+  }
+
+  Future<void> _reconcileReminders() async {
+    if (!_initialReminderActionRead || !mounted) return;
+    if (_syncingReminders) {
+      _reminderRefreshRequested = true;
+      return;
+    }
+    _syncingReminders = true;
+    try {
+      do {
+        _reminderRefreshRequested = false;
+        final payments = await ref.read(pendingPaymentServiceProvider).list();
+        if (!mounted) return;
+        await synchronizePaymentReminders(
+          ref.read(paymentReminderBridgeProvider),
+          payments,
+        );
+      } while (_reminderRefreshRequested && mounted);
+    } catch (_) {
+      // Storage and platform failures are retried on the next change/resume;
+      // permission is requested only from the explicit reminder controls.
+    } finally {
+      _syncingReminders = false;
+    }
+  }
+
+  Future<void> _ingestNativeQueue() async {
+    if (_processing) {
+      _refreshRequested = true;
+      return;
+    }
+    _processing = true;
+    try {
+      try {
+        final paymentId = await ref
+            .read(paymentReminderBridgeProvider)
+            .consumeOpenAction();
+        if (mounted && paymentId != null) {
+          final payment = await ref
+              .read(pendingPaymentServiceProvider)
+              .read(paymentId);
+          if (mounted)
+            ref
+                .read(routerProvider)
+                .go(
+                  payment == null
+                      ? '/payments'
+                      : '/payments/${Uri.encodeComponent(paymentId)}',
+                );
+        }
+      } catch (_) {
+        // Platform channel is unavailable in host rendering/tests.
+      } finally {
+        _initialReminderActionRead = true;
+      }
+      final action = await ref
+          .read(nativeNotificationBridgeProvider)
+          .getInitialAction();
+      if (action == 'py.finanzaslocales.QUICK_EXPENSE') {
+        ref.read(routerProvider).go('/transactions/new?type=expense');
+      } else if (action == 'py.finanzaslocales.OPEN_INBOX') {
+        ref.read(routerProvider).go('/inbox');
+      }
+      final settings = ref.read(settingsProvider);
+      final wallet = await settings.readBool('notification_listener_enabled');
+      final sms =
+          developerToolsEnabled &&
+          await settings.readBool('sms_notifications_enabled');
+      if (!developerToolsEnabled) {
+        await settings.write('diagnostic_mode', 'false');
+        await settings.write('sms_notifications_enabled', 'false');
+      }
+      await ref
+          .read(nativeNotificationBridgeProvider)
+          .configure(
+            enabled: wallet || sms,
+            diagnosticMode:
+                developerToolsEnabled &&
+                await settings.readBool('diagnostic_mode'),
+            allowedPackages: {
+              if (wallet) ...{
+                'com.google.android.gms',
+                'com.google.android.apps.walletnfcrel',
+              },
+              if (sms) 'com.google.android.apps.messaging',
+            },
+          );
+      final events = await ref
+          .read(nativeNotificationBridgeProvider)
+          .queuedEnvelopes();
+      for (final event in events) {
+        if (event.isTest && !developerToolsEnabled) continue;
+        if (event.packageName == 'com.google.android.apps.messaging' && sms) {
+          await ref.read(smsNotificationIngestionProvider).ingest(event);
+        } else if (wallet || (developerToolsEnabled && event.isTest)) {
+          await ref.read(notificationIngestionProvider).process(event);
+        }
+        await ref.read(nativeNotificationBridgeProvider).acknowledge(event);
+      }
+      await ref.read(notificationIngestionProvider).purgeExpiredRawEvents();
+    } catch (_) {
+      // Android access may be unavailable; explicit refresh remains available.
+    } finally {
+      try {
+        final result = await ref
+            .read(scheduledTemplateServiceProvider)
+            .processDue();
+        if (mounted &&
+            (result.registered.isNotEmpty || result.pending.isNotEmpty)) {
+          _messenger.currentState?.showSnackBar(
+            SnackBar(
+              content: Text(
+                '${result.registered.length} pagos pendientes preparados. ${result.pending.length} por revisar.',
+              ),
+              action: SnackBarAction(
+                label: 'Ver',
+                onPressed: () => ref.read(routerProvider).push('/payments'),
+              ),
+            ),
+          );
+        }
+      } catch (_) {
+        // Failed storage access leaves the schedule intact for the next opening.
+      }
+      try {
+        await ref.read(budgetServiceProvider).ensureCurrentMonth();
+      } catch (_) {
+        if (mounted) {
+          _messenger.currentState?.showSnackBar(
+            const SnackBar(
+              content: Text(
+                'No se pudieron preparar los presupuestos mensuales. Volvé a intentar desde Análisis.',
+              ),
+            ),
+          );
+        }
+      }
+      await _reconcileReminders();
+      _processing = false;
+      if (_refreshRequested && mounted) {
+        _refreshRequested = false;
+        await _ingestNativeQueue();
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    ref.read(nativeNotificationBridgeProvider).setCaptureHandler(null);
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) _ingestNativeQueue();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    ref.listen(pendingPaymentsProvider, (_, next) {
+      if (next.hasValue) _reconcileReminders();
+    });
+    final router = ref.watch(routerProvider);
+    final lock = AppLockService(ref.watch(settingsProvider));
+    return MaterialApp.router(
+      scaffoldMessengerKey: _messenger,
+      title: 'Cabal',
+      debugShowCheckedModeBanner: false,
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
+      themeMode: ThemeMode.system,
+      locale: const Locale('es', 'PY'),
+      supportedLocales: const [Locale('es', 'PY'), Locale('es')],
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      routerConfig: router,
+      builder: (context, child) =>
+          AppLockGate(service: lock, child: child ?? const SizedBox.shrink()),
+    );
+  }
+}
+
+FILE lib/app/providers.dart
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../core/backup/backup_service.dart';
+import '../core/database/app_database.dart';
+import '../core/notifications/native_notification_bridge.dart';
+import '../core/notifications/payment_reminder_bridge.dart';
+import '../features/payments/domain/pending_payment_service.dart';
+import '../core/notifications/notification_ingestion_service.dart';
+import '../core/notifications/sms_notification_ingestion_service.dart';
+import '../core/settings/settings_repository.dart';
+import '../features/accounts/data/accounts_service.dart';
+import '../features/budgets/domain/budget_service.dart';
+import '../features/installments/domain/installment_service.dart';
+import '../features/merchants/merchant_service.dart';
+import '../features/templates/manual_template_service.dart';
+import '../features/templates/scheduled_template_service.dart';
+import '../features/onboarding/data/onboarding_service.dart';
+import '../features/transactions/data/category_service.dart';
+import '../features/transactions/data/ledger_repository.dart';
+import '../features/transactions/data/ledger_service.dart';
+import '../features/transactions/domain/ledger_models.dart';
+
+final databaseProvider = Provider<AppDatabase>((ref) {
+  throw StateError('databaseProvider debe configurarse en main().');
+});
+
+final pendingPaymentServiceProvider = Provider(
+  (ref) => PendingPaymentService(ref.watch(databaseProvider)),
+);
+final pendingPaymentsProvider = StreamProvider<List<PendingPayment>>(
+  (ref) => ref.watch(pendingPaymentServiceProvider).watch(),
+);
+final paymentReminderBridgeProvider = Provider(
+  (ref) => const PaymentReminderBridge(),
+);
+
+final settingsProvider = Provider(
+  (ref) => SettingsRepository(ref.watch(databaseProvider)),
+);
+final manualTemplateServiceProvider = Provider(
+  (ref) => ManualTemplateService(ref.watch(databaseProvider)),
+);
+final scheduledTemplateServiceProvider = Provider(
+  (ref) => ScheduledTemplateService(ref.watch(databaseProvider)),
+);
+final manualTemplatesProvider = StreamProvider(
+  (ref) => ref.watch(manualTemplateServiceProvider).watch(),
+);
+final accountsServiceProvider = Provider(
+  (ref) => AccountsService(ref.watch(databaseProvider)),
+);
+final categoryServiceProvider = Provider(
+  (ref) => CategoryService(ref.watch(databaseProvider)),
+);
+final merchantServiceProvider = Provider(
+  (ref) => MerchantService(ref.watch(databaseProvider)),
+);
+final merchantsProvider = StreamProvider<List<MerchantRecord>>(
+  (ref) => ref.watch(merchantServiceProvider).watchMerchants(),
+);
+final merchantAliasesProvider = StreamProvider<List<MerchantAliasRecord>>((
+  ref,
+) {
+  final database = ref.watch(databaseProvider);
+  return database.select(database.merchantAliases).watch();
+});
+final ledgerServiceProvider = Provider(
+  (ref) => LedgerService(ref.watch(databaseProvider)),
+);
+final ledgerRepositoryProvider = Provider(
+  (ref) => LedgerRepository(ref.watch(databaseProvider)),
+);
+final installmentServiceProvider = Provider(
+  (ref) => InstallmentService(ref.watch(databaseProvider)),
+);
+final budgetServiceProvider = Provider(
+  (ref) => BudgetService(ref.watch(databaseProvider)),
+);
+final onboardingServiceProvider = Provider(
+  (ref) => OnboardingService(
+    ref.watch(databaseProvider),
+    ref.watch(accountsServiceProvider),
+    ref.watch(settingsProvider),
+  ),
+);
+final backupServiceProvider = Provider(
+  (ref) => BackupService(ref.watch(databaseProvider)),
+);
+final nativeNotificationBridgeProvider = Provider(
+  (ref) => const NativeNotificationBridge(),
+);
+final notificationIngestionProvider = Provider(
+  (ref) => NotificationIngestionService(
+    ref.watch(databaseProvider),
+    ref.watch(ledgerServiceProvider),
+    settings: ref.watch(settingsProvider),
+  ),
+);
+final smsNotificationIngestionProvider = Provider(
+  (ref) => SmsNotificationIngestionService(
+    ref.watch(databaseProvider),
+    ref.watch(accountsServiceProvider),
+    ref.watch(settingsProvider),
+  ),
+);
+
+final onboardingCompleteProvider = StreamProvider<bool>((ref) {
+  return ref
+      .watch(settingsProvider)
+      .watch('onboarding_complete')
+      .map((value) => value == 'true');
+});
+final accountsProvider = StreamProvider<List<AccountRecord>>((ref) {
+  return ref.watch(accountsServiceProvider).watchAccounts();
+});
+final categoriesProvider = StreamProvider<List<CategoryRecord>>((ref) {
+  return ref.watch(categoryServiceProvider).watchCategories();
+});
+final transactionsProvider = StreamProvider<List<TransactionRecord>>((ref) {
+  return ref.watch(ledgerRepositoryProvider).watchTransactions();
+});
+final accountBalancesProvider = StreamProvider<List<AccountBalance>>((ref) {
+  return ref.watch(ledgerRepositoryProvider).watchAccountBalances();
+});
+final pendingCandidatesProvider = StreamProvider<List<PaymentCandidateRecord>>((
+  ref,
+) {
+  return ref.watch(notificationIngestionProvider).watchPending();
+});
+
+final monthlyTransactionsProvider = StreamProvider.autoDispose
+    .family<List<TransactionRecord>, DateTime>((ref, month) {
+      return ref.watch(ledgerRepositoryProvider).watchConfirmedMonth(month);
+    });
+
+final historyTransactionsProvider = StreamProvider.autoDispose
+    .family<List<TransactionRecord>, int>((ref, limit) {
+      return ref
+          .watch(ledgerRepositoryProvider)
+          .watchTransactions(limit: limit);
+    });
+
+final allAccountsProvider = StreamProvider<List<AccountRecord>>(
+  (ref) =>
+      ref.watch(accountsServiceProvider).watchAccounts(includeArchived: true),
+);
+
+final filteredHistoryProvider = StreamProvider.autoDispose
+    .family<List<TransactionRecord>, ({HistoryFilter filter, int limit})>(
+      (ref, request) => ref
+          .watch(ledgerRepositoryProvider)
+          .watchFiltered(filter: request.filter, limit: request.limit),
+    );
+
+final allCategoriesProvider = StreamProvider<List<CategoryRecord>>(
+  (ref) =>
+      ref.watch(categoryServiceProvider).watchCategories(includeArchived: true),
+);
+
+final reportHistoryProvider = StreamProvider.autoDispose
+    .family<
+      List<TransactionRecord>,
+      ({
+        HistoryFilter filter,
+        int limit,
+        bool quotaPeriod,
+        bool unclassified,
+        bool reportOnly,
+        bool withoutMerchant,
+      })
+    >(
+      (ref, request) => ref
+          .watch(ledgerRepositoryProvider)
+          .watchFiltered(
+            filter: request.filter,
+            limit: request.limit,
+            installmentPeriod: request.quotaPeriod,
+            unclassifiedOnly: request.unclassified,
+            reportOnly: request.reportOnly,
+            withoutMerchant: request.withoutMerchant,
+          ),
+    );
+
+final movementsProvider = StreamProvider<List<MovementRow>>(
+  (ref) => ref.watch(ledgerRepositoryProvider).watchMovements(),
+);
+final movementHistoryProvider = StreamProvider.autoDispose
+    .family<
+      List<MovementRow>,
+      ({
+        HistoryFilter filter,
+        int limit,
+        bool unclassified,
+        bool reportOnly,
+        bool withoutMerchant,
+      })
+    >(
+      (ref, r) => ref
+          .watch(ledgerRepositoryProvider)
+          .watchMovements(
+            filter: r.filter,
+            limit: r.limit,
+            unclassifiedOnly: r.unclassified,
+            reportOnly: r.reportOnly,
+            withoutMerchant: r.withoutMerchant,
+          ),
+    );
+
+FILE test/features/transactions/pending_form_test.dart
+import 'package:drift/native.dart';
+import 'package:finanzas_locales/app/providers.dart';
+import 'package:finanzas_locales/core/database/app_database.dart';
+import 'package:finanzas_locales/features/transactions/presentation/transaction_form_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
+import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('Gasto permite cuotas sin crédito y rango completo', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          accountsProvider.overrideWith((ref) => Stream.value([])),
+          categoriesProvider.overrideWith((ref) => Stream.value([])),
+          merchantsProvider.overrideWith((ref) => Stream.value([])),
+          merchantAliasesProvider.overrideWith((ref) => Stream.value([])),
+        ],
+        child: const MaterialApp(home: TransactionFormScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('En cuotas'), findsOneWidget);
+    await tester.ensureVisible(find.text('En cuotas'));
+    await tester.tap(find.text('En cuotas'));
+    await tester.pumpAndSettle();
+    final count = tester.widget<DropdownButton<int>>(
+      find.byType(DropdownButton<int>).first,
+    );
+    expect(count.items!.map((e) => e.value), containsAll([2, 119, 120]));
+    expect(find.text('Guardar también como plantilla'), findsNothing);
+  });
+  for (final income in [false, true]) {
+    testWidgets('Cuotas conservan borrador al cambiar tipo, ingreso=$income', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      late List<AccountRecord> accounts;
+      await tester.runAsync(() async {
+        await AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        );
+        accounts = await db.select(db.accounts).get();
+      });
+      const channel = MethodChannel('finanzas_locales/payment_reminders');
+      tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        channel,
+        (_) async => false,
+      );
+      addTearDown(
+        () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          channel,
+          null,
+        ),
+      );
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            accountsProvider.overrideWith((ref) => Stream.value(accounts)),
+            categoriesProvider.overrideWith((ref) => Stream.value([])),
+            merchantsProvider.overrideWith((ref) => Stream.value([])),
+            merchantAliasesProvider.overrideWith((ref) => Stream.value([])),
+          ],
+          child: const MaterialApp(home: TransactionFormScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find.widgetWithText(
+          DropdownButtonFormField<String>,
+          'Cuenta de origen',
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Banco').last);
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Importe'),
+        '100000',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Descripción'),
+        'Servicio',
+      );
+      await tester.ensureVisible(find.text('En cuotas'));
+      await tester.tap(find.text('En cuotas'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Ingreso'),
+        -250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Ingreso'));
+      await tester.pumpAndSettle();
+      if (!income) {
+        await tester.tap(find.text('Gasto'));
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<SwitchListTile>(
+                find.widgetWithText(SwitchListTile, 'En cuotas'),
+              )
+              .value,
+          true,
+        );
+      }
+      if (income) {
+        await tester.tap(
+          find.widgetWithText(
+            DropdownButtonFormField<String>,
+            'Cuenta de destino',
+          ),
+        );
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Banco').last);
+        await tester.pumpAndSettle();
+      }
+      await tester.scrollUntilVisible(
+        find.text('Guardar y crear otro'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Guardar y crear otro'));
+      await tester.pumpAndSettle();
+      await tester.scrollUntilVisible(
+        find.text('Guardar movimiento'),
+        250,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.text('Guardar movimiento'));
+      await tester.runAsync(() async {
+        await Future<void>.delayed(const Duration(milliseconds: 70));
+      });
+      await tester.pumpAndSettle();
+      await tester.runAsync(() async {
+        final ledger = await db.select(db.ledgerTransactions).get();
+        final pending = await PendingPaymentService(db).list();
+        if (income) {
+          expect(ledger.single.type, 'income');
+          expect(pending, isEmpty);
+          expect(await db.select(db.installmentPlans).get(), isEmpty);
+        } else {
+          expect(ledger, isEmpty);
+          expect(pending, hasLength(2));
+          expect(pending.fold<int>(0, (n, p) => n + p.amountMinor), 100000);
+        }
+      });
+      if (!income)
+        expect(
+          find.text('Guardado. Recordatorios sin permiso.'),
+          findsOneWidget,
+        );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    });
+  }
+  testWidgets('Formulario en cuotas admite 320px y texto 2x', (tester) async {
+    tester.view.physicalSize = const Size(320, 1800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    FlutterErrorDetails? layoutError;
+    final originalErrorHandler = FlutterError.onError;
+    FlutterError.onError = (details) {
+      layoutError = details;
+      originalErrorHandler?.call(details);
+    };
+    addTearDown(() => FlutterError.onError = originalErrorHandler);
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          accountsProvider.overrideWith((ref) => Stream.value([])),
+          categoriesProvider.overrideWith((ref) => Stream.value([])),
+          merchantsProvider.overrideWith((ref) => Stream.value([])),
+          merchantAliasesProvider.overrideWith((ref) => Stream.value([])),
+        ],
+        child: MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context)
+                .copyWith(textScaler: const TextScaler.linear(2)),
+            child: child!,
+          ),
+          home: const TransactionFormScreen(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: layoutError?.toString());
+    await tester.scrollUntilVisible(
+      find.text('En cuotas'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.tap(find.text('En cuotas'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: layoutError?.toString());
+    await tester.scrollUntilVisible(
+      find.text('Guardar movimiento'),
+      250,
+      scrollable: find.byType(Scrollable).first,
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull, reason: layoutError?.toString());
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+}
+
+FILE test/features/transactions/pending_screens_test.dart
+import 'package:drift/native.dart';
+import 'package:finanzas_locales/app/providers.dart';
+import 'package:finanzas_locales/core/database/app_database.dart';
+import 'package:finanzas_locales/features/payments/presentation/payments_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
+import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_service.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('Listado vacío no ofrece confirmar pagos inexistentes', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          pendingPaymentsProvider.overrideWith((ref) => Stream.value([])),
+        ],
+        child: const MaterialApp(home: PaymentsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Sin pagos pendientes'), findsOneWidget);
+    expect(find.text('Confirmar pago'), findsNothing);
+  });
+  testWidgets(
+    'Pago parcial conserva saldo pendiente y no ofrece traslado en última cuota',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await tester.runAsync(
+        () => AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        ),
+      );
+      final service = PendingPaymentService(db);
+      final payment = (await tester.runAsync(
+        () => service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 1,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account!,
+          description: 'Servicio',
+        ),
+      ))!.single;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(home: PaymentDetailScreen(paymentId: payment.id)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Trasladar resto a la siguiente cuota'), findsNothing);
+      await tester.enterText(
+        find.byKey(const ValueKey('paid-amount')),
+        '40000',
+      );
+      await tester.ensureVisible(find.text('Confirmar pago'));
+      await tester.tap(find.text('Confirmar pago'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payment.id))!.remainingMinor, 60000);
+      expect(
+        (await db.select(db.ledgerTransactions).get()).single.amountMinor,
+        40000,
+      );
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+  testWidgets(
+    'Cancelación exige confirmación y no registra gasto, 320px texto 2x',
+    (tester) async {
+      tester.view.physicalSize = const Size(320, 1800);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await tester.runAsync(
+        () => AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        ),
+      );
+      final service = PendingPaymentService(db);
+      final payment = (await tester.runAsync(
+        () => service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 2,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account!,
+          description: 'Servicio',
+        ),
+      ))!.first;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context)
+                  .copyWith(textScaler: const TextScaler.linear(2)),
+              child: child!,
+            ),
+            home: PaymentDetailScreen(paymentId: payment.id),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Cancelar pendiente'));
+      await tester.tap(find.text('Cancelar pendiente'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Volver'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payment.id))!.cancelled, false);
+      await tester.ensureVisible(find.text('Cancelar pendiente'));
+      await tester.tap(find.text('Cancelar pendiente'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Confirmar cancelación'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payment.id))!.cancelled, true);
+      expect(await db.select(db.ledgerTransactions).get(), isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+  testWidgets(
+    'Pago parcial traslada resto a cuota existente y rechaza importe inválido',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await tester.runAsync(
+        () => AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        ),
+      );
+      final service = PendingPaymentService(db);
+      final payments = (await tester.runAsync(
+        () => service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 2,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account!,
+          description: 'Servicio',
+        ),
+      ))!;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            home: PaymentDetailScreen(paymentId: payments.first.id),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byKey(const ValueKey('paid-amount')), '0');
+      await tester.ensureVisible(find.text('Confirmar pago'));
+      await tester.tap(find.text('Confirmar pago'));
+      await tester.pumpAndSettle();
+      expect(await db.select(db.ledgerTransactions).get(), isEmpty);
+      expect(find.textContaining('Importe inválido'), findsOneWidget);
+      await tester.enterText(
+        find.byKey(const ValueKey('paid-amount')),
+        '20000',
+      );
+      await tester.ensureVisible(
+        find.text('Trasladar resto a la siguiente cuota'),
+      );
+      await tester.tap(find.text('Trasladar resto a la siguiente cuota'));
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Confirmar pago'));
+      await tester.tap(find.text('Confirmar pago'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payments.first.id))!.remainingMinor, 0);
+      expect((await service.read(payments.last.id))!.remainingMinor, 80000);
+      expect(
+        (await db.select(db.ledgerTransactions).get()).single.amountMinor,
+        20000,
+      );
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+  testWidgets(
+    'Edición futura y recordatorios se conservan sin registrar pagos',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await tester.runAsync(
+        () => AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        ),
+      );
+      final service = PendingPaymentService(db);
+      final payments = (await tester.runAsync(
+        () => service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 2,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account!,
+          description: 'Servicio',
+        ),
+      ))!;
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: MaterialApp(
+            home: PaymentDetailScreen(paymentId: payments.first.id),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.ensureVisible(find.text('Editar pendiente'));
+      await tester.tap(find.text('Editar pendiente'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.widgetWithText(TextField, 'Importe previsto'),
+        '60000',
+      );
+      await tester.tap(find.text('Esta cuota y las siguientes'));
+      await tester.tap(find.text('Guardar'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payments.last.id))!.amountMinor, 60000);
+      await tester.ensureVisible(find.text('Recordatorios'));
+      await tester.tap(find.text('Recordatorios'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(AlertDialog),
+              matching: find.text('Recordatorios'),
+            )
+            .last,
+      );
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Guardar'));
+      await tester.pumpAndSettle();
+      expect((await service.read(payments.last.id))!.reminders.enabled, false);
+      expect(await db.select(db.ledgerTransactions).get(), isEmpty);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+  testWidgets(
+    'Filtros muestran cuotas parcialmente pagadas y canceladas como prototipo',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await tester.runAsync(
+        () => AccountsService(db).createAccount(
+          const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+        ),
+      );
+      final service = PendingPaymentService(db);
+      await tester.runAsync(() async {
+        final p = (await service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 1,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account!,
+          description: 'Parcial',
+        )).single;
+        await service.pay(
+          id: p.id,
+          expectedRevision: 0,
+          amountMinor: 20000,
+          paidAt: DateTime(2026, 10, 8),
+          accountId: account,
+        );
+        final c = (await service.createPlan(
+          amountMinor: 100000,
+          installmentCount: 1,
+          firstDueDate: DateTime(2026, 10, 8),
+          accountId: account,
+          description: 'Cancelado',
+        )).single;
+        await service.cancel(c.id, expectedRevision: 0);
+      });
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [databaseProvider.overrideWithValue(db)],
+          child: const MaterialApp(home: PaymentsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Parcial'), findsOneWidget);
+      expect(find.text('Cancelado'), findsNothing);
+      await tester.tap(find.text('Con pagos'));
+      await tester.pumpAndSettle();
+      expect(find.text('Parcial'), findsOneWidget);
+      expect(find.text('Cancelado'), findsNothing);
+      await tester.tap(find.text('Todos'));
+      await tester.pumpAndSettle();
+      expect(find.text('Parcial'), findsOneWidget);
+      expect(find.text('Cancelado'), findsOneWidget);
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pumpAndSettle();
+    },
+  );
+}
+
+FILE test/features/templates/manual_template_form_test.dart
+import 'package:drift/native.dart';
+import 'package:finanzas_locales/app/providers.dart';
+import 'package:finanzas_locales/core/database/app_database.dart';
+import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
+import 'package:finanzas_locales/features/templates/manual_template_service.dart';
+import 'package:finanzas_locales/features/templates/scheduled_template_service.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_service.dart';
+import 'package:finanzas_locales/features/merchants/merchant_service.dart';
+import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
+import 'package:finanzas_locales/features/transactions/presentation/transaction_form_screen.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  testWidgets('Plantilla programada edita recordatorios antes de guardar', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final id = await tester.runAsync(
+      () => ManualTemplateService(db).save('Servicio', {
+        'type': 'expense',
+        'amountMinor': 10000,
+        'channel': 'other',
+        'schedule': {
+          'enabled': false,
+          'frequency': 'monthly',
+          'nextDate': '2030-11-04',
+        },
+      }),
+    );
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          accountsProvider.overrideWith((ref) => Stream.value([])),
+          categoriesProvider.overrideWith((ref) => Stream.value([])),
+          merchantsProvider.overrideWith((ref) => Stream.value([])),
+          merchantAliasesProvider.overrideWith((ref) => Stream.value([])),
+        ],
+        child: MaterialApp(
+          home: TransactionFormScreen(savedTemplateId: id!, editTemplate: true),
+        ),
+      ),
+    );
+    await tester.runAsync(() async {
+      await Future<void>.delayed(const Duration(milliseconds: 40));
+    });
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Guardar plantilla'));
+    await tester.tap(find.text('Guardar plantilla'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Preparar pagos pendientes'));
+    await tester.pumpAndSettle();
+    await tester.ensureVisible(find.text('Recordatorios'));
+    await tester.tap(find.text('Recordatorios'));
+    await tester.pumpAndSettle();
+    expect(find.text('Días antes'), findsNothing);
+    expect(find.textContaining('Registra al abrir'), findsNothing);
+    await tester.tap(find.text('Cancelar'));
+    await tester.pumpAndSettle();
+    expect(
+      (await tester.runAsync(() => ManualTemplateService(db).read(id)))!
+          .fields['reminders'],
+      isNull,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+  });
+  for (final automatic in [false, true]) {
+    testWidgets(
+      'usar y guardar plantilla con movimiento, automática=$automatic',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        const reminderChannel = MethodChannel(
+          'finanzas_locales/payment_reminders',
+        );
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          reminderChannel,
+          (_) async => false,
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            reminderChannel,
+            null,
+          ),
+        );
+        late String merchantId;
+        late List<AccountRecord> accounts;
+        await tester.runAsync(() async {
+          final account = await AccountsService(db).createAccount(
+            const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+          );
+          accounts = await db.select(db.accounts).get();
+          merchantId = await MerchantService(db).findOrCreate('Alquiler');
+          await ManualTemplateService(db).save('A ingreso', {
+            'type': 'income',
+            'amountMinor': 100,
+            'to': account,
+          });
+          await ManualTemplateService(db).save('Alquiler', {
+            'type': 'expense',
+            'amountMinor': 120000,
+            'from': account,
+            'merchant': 'Nombre anterior',
+            'merchantId': merchantId,
+            'channel': 'bankTransfer',
+            if (automatic)
+              'schedule': {
+                'enabled': true,
+                'frequency': 'monthly',
+                'nextDate': '2030-11-04',
+              },
+          });
+        });
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              accountsProvider.overrideWith((ref) => Stream.value(accounts)),
+              categoriesProvider.overrideWith((ref) => Stream.value([])),
+              merchantsProvider.overrideWith((ref) => Stream.value([])),
+              merchantAliasesProvider.overrideWith((ref) => Stream.value([])),
+            ],
+            child: const MaterialApp(home: TransactionFormScreen()),
+          ),
+        );
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('Usar plantilla'));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pumpAndSettle();
+        expect(
+          find.text('Administrar plantillas y registros programados'),
+          findsOneWidget,
+        );
+        expect(
+          tester.getTopLeft(find.text('Alquiler')).dy,
+          lessThan(tester.getTopLeft(find.text('A ingreso')).dy),
+        );
+        expect(find.text('Ingreso · Abrir y revisar'), findsOneWidget);
+        if (automatic) {
+          expect(
+            find.textContaining('Mensual · Próximo registro:'),
+            findsOneWidget,
+          );
+        }
+        await tester.tap(find.text('Alquiler'));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 50));
+        });
+        await tester.pumpAndSettle();
+        expect(
+          tester
+              .widget<TextFormField>(find.byType(TextFormField).first)
+              .controller!
+              .text,
+          '120.000',
+        );
+        expect(find.text('Banco'), findsOneWidget);
+        await tester.runAsync(() async {
+          expect(await db.select(db.ledgerTransactions).get(), isEmpty);
+        });
+        await tester.scrollUntilVisible(
+          find.text('Guardar también como plantilla'),
+          300,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.text('Guardar también como plantilla'));
+        await tester.scrollUntilVisible(
+          find.text('Guardar y crear otro'),
+          150,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.text('Guardar y crear otro'));
+        await tester.scrollUntilVisible(
+          find.text('Guardar movimiento'),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.text('Guardar movimiento'));
+        await tester.pumpAndSettle();
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'Nombre de la plantilla'),
+          automatic ? 'Netflix automático' : 'Alquiler variable',
+        );
+        if (automatic) {
+          await tester.tap(find.text('Preparar pagos pendientes'));
+          await tester.pumpAndSettle();
+          expect(find.text('Mensual'), findsOneWidget);
+          expect(find.text('Próxima fecha'), findsOneWidget);
+        } else {
+          await tester.tap(find.text('Recordar importe'));
+        }
+        await tester.pump();
+        await tester.tap(find.widgetWithText(FilledButton, 'Guardar'));
+        await tester.runAsync(() async {
+          await Future<void>.delayed(const Duration(milliseconds: 100));
+        });
+        await tester.pumpAndSettle();
+        await tester.runAsync(() async {
+          final templates = await ManualTemplateService(db).list();
+          expect(templates, hasLength(3));
+          final saved = templates.firstWhere(
+            (t) =>
+                t.name ==
+                (automatic ? 'Netflix automático' : 'Alquiler variable'),
+          );
+          expect(saved.fields['merchantId'], merchantId);
+          expect(saved.fields['amountMinor'], automatic ? 120000 : null);
+          expect((saved.fields['schedule'] as Map)['enabled'], automatic);
+          expect(await db.select(db.ledgerTransactions).get(), hasLength(1));
+          if (automatic) {
+            final result = await ScheduledTemplateService(db).processDue();
+            expect(result.registered, ['Netflix automático']);
+            final future = await PendingPaymentService(db).list();
+            expect(future, hasLength(1));
+            expect(future.single.amountMinor, 120000);
+            expect(future.single.paidMinor, 0);
+            expect(
+              future.single.sourceReference,
+              startsWith('scheduled:${saved.id}:'),
+            );
+            expect(
+              (await ScheduledTemplateService(db).processDue()).registered,
+              isEmpty,
+            );
+            expect(result.pending, isEmpty);
+            expect(await db.select(db.ledgerTransactions).get(), hasLength(1));
+          }
+        });
+        if (automatic)
+          expect(
+            find.text('Guardado. Recordatorios sin permiso.'),
+            findsOneWidget,
+          );
+        await tester.pumpWidget(const SizedBox());
+        await tester.runAsync(db.close);
+      },
+    );
+  }
+}

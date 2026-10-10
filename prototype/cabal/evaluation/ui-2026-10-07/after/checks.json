@@ -1,0 +1,12 @@
+{
+  "contentBottom": 587,
+  "fabDoesNotCoverRows": true,
+  "fabTop": 595,
+  "noExplanatoryHomeCopy": true,
+  "primaryRowFont": "14px",
+  "scroll": 320,
+  "viewport": [
+    320,
+    740
+  ]
+}

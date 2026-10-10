@@ -1,0 +1,157 @@
+import 'package:drift/native.dart';
+import 'package:finanzas_locales/core/money/money.dart';
+import 'package:finanzas_locales/features/templates/manual_template_service.dart';
+import 'package:finanzas_locales/features/templates/scheduled_template_service.dart';
+import 'package:finanzas_locales/core/database/app_database.dart';
+import 'package:finanzas_locales/core/notifications/notification_envelope.dart';
+import 'package:finanzas_locales/core/notifications/notification_ingestion_service.dart';
+import 'package:finanzas_locales/core/settings/settings_repository.dart';
+import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
+import 'package:finanzas_locales/features/merchants/merchant_service.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_service.dart';
+import 'package:finanzas_locales/features/transactions/data/ledger_service.dart';
+import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+void main() {
+  late AppDatabase db;
+  late NotificationIngestionService wallet;
+  late PendingPaymentService payments;
+  late String account;
+  late String merchant;
+  final date = DateTime.utc(2026, 10, 4, 12);
+
+  setUp(() async {
+    db = AppDatabase.forTesting(NativeDatabase.memory());
+    final settings = SettingsRepository(db);
+    await settings.write('notification_listener_enabled', 'true');
+    await settings.write('wallet_auto_register', 'true');
+    account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(
+        name: 'Banco',
+        type: AccountType.bank,
+        aliases: ['1234'],
+      ),
+    );
+    merchant = await MerchantService(db).findOrCreate('ECOP OBLIGADO');
+    payments = PendingPaymentService(db);
+    wallet = NotificationIngestionService(
+      db,
+      LedgerService(db),
+      settings: settings,
+    );
+  });
+  tearDown(() => db.close());
+
+  NotificationEnvelope event(int amount) => NotificationEnvelope(
+    version: 1,
+    packageName: 'com.google.android.apps.walletnfcrel',
+    notificationKey: 'wallet-$amount',
+    id: amount,
+    postTime: date,
+    title: 'ECOP OBLIGADO',
+    text: 'PYG $amount · ••1234',
+  );
+
+  Future<String> prepareDue(bool scheduled) async {
+    if (scheduled) {
+      await ManualTemplateService(db).save('Ecop', {
+        'type': 'expense',
+        'amountMinor': 100,
+        'from': account,
+        'merchant': 'ECOP OBLIGADO',
+        'merchantId': merchant,
+        'channel': 'onlineCard',
+        'schedule': {
+          'enabled': true,
+          'frequency': 'monthly',
+          'nextDate': '2026-10-04',
+          'anchorDay': 4,
+          'anchorMonth': 10,
+        },
+      });
+      await ScheduledTemplateService(db).processDue(now: date);
+      return (await payments.list()).first.id;
+    }
+    return (await payments.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: date,
+      accountId: account,
+      merchantId: merchant,
+    )).single.id;
+  }
+
+  Future<String> payDue(String id, int amount) => payments.pay(
+    id: id,
+    expectedRevision: 0,
+    amountMinor: amount,
+    paidAt: date.subtract(const Duration(hours: 1)),
+    accountId: account,
+  );
+
+  Future<void> expectSinglePayment(String id, int amount) async {
+    final tx = await db.select(db.ledgerTransactions).get();
+    expect(tx, hasLength(1));
+    expect(tx.single.amountMinor, amount);
+    expect(tx.single.source, 'manual');
+    expect(tx.single.externalFingerprint, startsWith('pending:'));
+    final postings = await db.select(db.accountPostings).get();
+    expect(postings, hasLength(1));
+    expect(postings.single.deltaMinor, -amount);
+    expect((await payments.read(id))!.remainingMinor, 100 - amount);
+  }
+
+  for (final scheduled in [true, false]) {
+    for (final amount in [100, 40]) {
+      test(
+        'process protects linked payment scheduled=$scheduled paid=$amount',
+        () async {
+          final id = await prepareDue(scheduled);
+          await payDue(id, amount);
+          final candidate = (await wallet.process(event(amount)))!;
+          expect(candidate.status, 'pending');
+          expect(candidate.suggestionReason, contains('registro programado'));
+          await expectSinglePayment(id, amount);
+        },
+      );
+
+      test(
+        'stale automatic confirm protects linked payment scheduled=$scheduled paid=$amount',
+        () async {
+          final id = await prepareDue(scheduled);
+          final candidate = (await wallet.ingest(event(amount)))!;
+          await payDue(id, amount);
+          await expectLater(
+            wallet.confirm(
+              candidate,
+              fromAccountId: account,
+              merchantId: merchant,
+              automatic: true,
+            ),
+            throwsStateError,
+          );
+          expect((await wallet.watchPending().first).single.id, candidate.id);
+          await expectSinglePayment(id, amount);
+        },
+      );
+    }
+  }
+
+  test(
+    'ordinary manual expense one hour earlier retains two-minute policy',
+    () async {
+      await LedgerService(db).create(
+        TransactionDraft(
+          type: TransactionType.expense,
+          amount: const Money(100, currencyCode: 'PYG'),
+          occurredAt: date.subtract(const Duration(hours: 1)),
+          fromAccountId: account,
+          merchantId: merchant,
+        ),
+      );
+      expect((await wallet.process(event(100)))!.status, 'confirmed');
+      expect(await db.select(db.ledgerTransactions).get(), hasLength(2));
+    },
+  );
+}

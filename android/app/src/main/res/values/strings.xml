@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Cabal</string>
+    <string name="shortcut_expense_short">Nuevo gasto</string>
+    <string name="shortcut_expense_long">Registrar un gasto rápido</string>
+</resources>

@@ -1,0 +1,3044 @@
+Current sources, not historical diff: original temporary snapshot lost across environment restart.
+
+FILE lib/features/payments/domain/pending_payment_service.dart
+import 'dart:convert';
+
+import 'package:drift/drift.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../../core/database/app_database.dart';
+import '../../../core/money/money.dart';
+import '../../transactions/data/ledger_service.dart';
+import '../../transactions/domain/ledger_models.dart';
+import '../../transactions/domain/payment_channel_policy.dart';
+import 'pending_payment_models.dart';
+export 'pending_payment_models.dart';
+
+final class PendingPaymentService {
+  PendingPaymentService(this.database);
+  final AppDatabase database;
+  static const prefix = 'pending_payment:v1:';
+  void _checkBook(int? expected) {
+    if (expected != null && expected != database.restoreGeneration) {
+      throw StateError('Los datos fueron restaurados.');
+    }
+  }
+
+  Stream<List<PendingPayment>> watch() => database
+      .customSelect(
+        'SELECT count(*) AS count FROM app_settings',
+        readsFrom: {
+          database.appSettings,
+          database.ledgerTransactions,
+          database.transactionSplits,
+        },
+      )
+      .watch()
+      .asyncMap((_) => list());
+  Future<List<PendingPayment>> _rawList() async =>
+      (await (database.select(
+            database.appSettings,
+          )..where((t) => t.key.like('$prefix%'))).get())
+          .map(
+            (r) => PendingPayment(
+              Map<String, dynamic>.from(jsonDecode(r.value) as Map),
+            ),
+          )
+          .toList()
+        ..sort((a, b) => a.dueDate.compareTo(b.dueDate));
+  Future<List<PendingPayment>> list() async {
+    final rows = await _rawList();
+    for (final p in rows) {
+      await _hydrate(p);
+    }
+    return rows;
+  }
+
+  Future<void> _hydrate(PendingPayment p) async {
+    final active = <Map<String, dynamic>>[];
+    for (final payment in p.payments) {
+      final tx =
+          await (database.select(database.ledgerTransactions)
+                ..where((t) => t.id.equals(payment['transactionId'] as String)))
+              .getSingleOrNull();
+      if (tx != null && tx.status != 'deleted' && tx.status != 'reversed') {
+        final splits = await (database.select(
+          database.transactionSplits,
+        )..where((s) => s.transactionId.equals(tx.id))).get();
+        active.add({
+          ...payment,
+          'amountMinor': tx.amountMinor,
+          'paidAt': tx.occurredAt.toIso8601String(),
+          'accountId': tx.fromAccountId,
+          'splits': [
+            for (final s in splits)
+              {'categoryId': s.categoryId, 'amountMinor': s.amountMinor},
+          ],
+        });
+      }
+    }
+    p.effectivePayments = active;
+    p.effectivePaidMinor = active.fold<int>(
+      0,
+      (n, p) => n + (p['amountMinor'] as int),
+    );
+  }
+
+  Future<PendingPayment?> read(String id) async {
+    final row = await (database.select(
+      database.appSettings,
+    )..where((t) => t.key.equals('$prefix$id'))).getSingleOrNull();
+    if (row == null) return null;
+    final p = PendingPayment(
+      Map<String, dynamic>.from(jsonDecode(row.value) as Map),
+    );
+    await _hydrate(p);
+    return p;
+  }
+
+  Future<void> _save(PendingPayment p) async {
+    await database
+        .into(database.appSettings)
+        .insertOnConflictUpdate(
+          AppSettingsCompanion.insert(
+            key: '$prefix${p.id}',
+            value: jsonEncode(p.data),
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+  }
+
+  Future<PendingPayment> _checked(String id, int revision) async {
+    final p = await read(id);
+    if (p == null || p.revision != revision || p.cancelled) {
+      throw StateError('El pendiente cambió.');
+    }
+    return p;
+  }
+
+  Future<void> _account(String id, {bool allowCredit = false}) async {
+    final a = await (database.select(
+      database.accounts,
+    )..where((a) => a.id.equals(id))).getSingleOrNull();
+    if (a == null ||
+        a.isArchived ||
+        a.currencyCode != 'PYG' ||
+        (!allowCredit && a.type == 'creditCard')) {
+      throw StateError('Elegí una cuenta activa sin crédito.');
+    }
+  }
+
+  Future<void> validateDraft({
+    required int amountMinor,
+    required String accountId,
+    String? merchantId,
+    PaymentChannel paymentChannel = PaymentChannel.other,
+    List<SplitDraft> splits = const [],
+    PaymentReminderSettings reminders = const PaymentReminderSettings(),
+    bool allowCredit = false,
+  }) async {
+    reminders.validate();
+    if (amountMinor <= 0) {
+      throw const FormatException('Importe o cuotas inválidos.');
+    }
+    await _account(accountId, allowCredit: allowCredit);
+    final account = await (database.select(
+      database.accounts,
+    )..where((a) => a.id.equals(accountId))).getSingle();
+    if (!PaymentChannelPolicy.allowed(
+      TransactionType.expense,
+      from: AccountType.values.byName(account.type),
+    ).contains(PaymentChannelPolicy.canonical(paymentChannel)))
+      throw const FormatException('Canal inválido.');
+    if (splits.isNotEmpty &&
+        splits.fold<int>(0, (n, s) => n + s.amountMinor) != amountMinor) {
+      throw const FormatException('Las categorías deben sumar el importe.');
+    }
+    for (final s in splits) {
+      final c = await (database.select(
+        database.categories,
+      )..where((c) => c.id.equals(s.categoryId))).getSingleOrNull();
+      if (s.amountMinor <= 0 ||
+          c == null ||
+          c.isArchived ||
+          c.kind == 'income') {
+        throw const FormatException('Categoría inválida.');
+      }
+    }
+    if (merchantId != null) {
+      final m = await (database.select(
+        database.merchants,
+      )..where((m) => m.id.equals(merchantId))).getSingleOrNull();
+      if (m == null || m.isArchived) throw StateError('Comercio inválido.');
+    }
+  }
+
+  Future<List<PendingPayment>> createPlan({
+    required int amountMinor,
+    required int installmentCount,
+    required DateTime firstDueDate,
+    required String accountId,
+    String? merchantId,
+    String description = '',
+    String note = '',
+    PaymentChannel paymentChannel = PaymentChannel.other,
+    List<SplitDraft> splits = const [],
+    String? sourceReference,
+    DateTime? occurredAt,
+    PaymentReminderSettings reminders = const PaymentReminderSettings(),
+    int? expectedBookGeneration,
+  }) => database.transaction(() async {
+    _checkBook(expectedBookGeneration);
+    if (installmentCount < 1 ||
+        installmentCount > 120 ||
+        amountMinor < installmentCount) {
+      throw const FormatException('Importe o cuotas inválidos.');
+    }
+    await validateDraft(
+      amountMinor: amountMinor,
+      accountId: accountId,
+      merchantId: merchantId,
+      paymentChannel: paymentChannel,
+      splits: splits,
+      reminders: reminders,
+      allowCredit: sourceReference != null,
+    );
+    final plan = const Uuid().v4(), result = <PendingPayment>[];
+    var allocated = 0;
+    final categoryAllocated = List<int>.filled(splits.length, 0);
+    for (var i = 0; i < installmentCount; i++) {
+      final amount = i == installmentCount - 1
+          ? amountMinor - allocated
+          : amountMinor ~/ installmentCount;
+      allocated += amount;
+      final dueMonth = DateTime(firstDueDate.year, firstDueDate.month + i, 1);
+      final last = DateTime(dueMonth.year, dueMonth.month + 1, 0).day;
+      final parts = <Map<String, dynamic>>[];
+      var rowAllocated = 0;
+      for (var j = 0; j < splits.length; j++) {
+        final cumulative = i == installmentCount - 1
+            ? splits[j].amountMinor
+            : (allocated * splits[j].amountMinor) ~/ amountMinor;
+        var part = cumulative - categoryAllocated[j];
+        if (j == splits.length - 1) part = amount - rowAllocated;
+        categoryAllocated[j] += part;
+        rowAllocated += part;
+        parts.add({'categoryId': splits[j].categoryId, 'amountMinor': part});
+      }
+      final p = PendingPayment({
+        'version': 1,
+        'id': const Uuid().v4(),
+        'planId': plan,
+        'installmentNumber': i + 1,
+        'installmentCount': installmentCount,
+        'amountMinor': amount,
+        'dueDate': DateTime(
+          dueMonth.year,
+          dueMonth.month,
+          firstDueDate.day > last ? last : firstDueDate.day,
+        ).toIso8601String(),
+        'accountId': accountId,
+        'merchantId': merchantId,
+        'description': description,
+        'note': note,
+        'paymentChannel': paymentChannel.name,
+        'splits': parts,
+        'revision': 0,
+        'cancelled': false,
+        'payments': <Map<String, dynamic>>[],
+        'reminders': reminders.toJson(),
+        'occurredAt': occurredAt?.toIso8601String(),
+        'sourceReference': sourceReference,
+      });
+      await _save(p);
+      result.add(p);
+    }
+    return result;
+  });
+  Future<String> pay({
+    required String id,
+    required int expectedRevision,
+    required int amountMinor,
+    required DateTime paidAt,
+    required String accountId,
+    bool carryRemainder = false,
+    int? expectedBookGeneration,
+  }) => database.transaction(() async {
+    _checkBook(expectedBookGeneration);
+    final p = await _checked(id, expectedRevision);
+    await _account(accountId);
+    if (amountMinor <= 0 || amountMinor > p.remainingMinor) {
+      throw const FormatException('Importe inválido.');
+    }
+    PendingPayment? next;
+    final remainder = p.remainingMinor - amountMinor;
+    if (carryRemainder && remainder > 0) {
+      final following =
+          (await list())
+              .where(
+                (q) =>
+                    q.planId == p.planId &&
+                    q.installmentNumber > p.installmentNumber &&
+                    !q.cancelled &&
+                    q.remainingMinor > 0,
+              )
+              .toList()
+            ..sort(
+              (a, b) => a.installmentNumber.compareTo(b.installmentNumber),
+            );
+      if (following.isEmpty) throw StateError('No existe otra cuota.');
+      next = following.first;
+    }
+    final residual = p.remainingSplits;
+    var allocated = 0;
+    final portions = <SplitDraft>[];
+    final keys = residual.keys.toList();
+    for (var i = 0; i < keys.length; i++) {
+      final key = keys[i];
+      final part = i == keys.length - 1
+          ? amountMinor - allocated
+          : amountMinor * residual[key]! ~/ p.remainingMinor;
+      allocated += part;
+      if (part > 0) {
+        portions.add(SplitDraft(categoryId: key, amountMinor: part));
+      }
+    }
+    final payingAccount = await (database.select(
+      database.accounts,
+    )..where((a) => a.id.equals(accountId))).getSingle();
+    final effectiveChannel = payingAccount.type == 'cash'
+        ? PaymentChannel.cash
+        : (p.paymentChannel == PaymentChannel.cash
+              ? PaymentChannel.other
+              : p.paymentChannel);
+    final tx = await LedgerService(database).create(
+      TransactionDraft(
+        type: TransactionType.expense,
+        amount: Money(amountMinor, currencyCode: 'PYG'),
+        occurredAt: paidAt,
+        fromAccountId: accountId,
+        merchantId: p.merchantId,
+        description: p.description,
+        note: p.note,
+        paymentChannel: effectiveChannel,
+        splits: portions,
+        externalFingerprint: 'pending:${p.id}:${p.revision}',
+        sourceReference: p.sourceReference ?? p.planId,
+      ),
+    );
+    p.data['payments'] = [
+      ...p.payments,
+      {
+        'transactionId': tx,
+        'amountMinor': amountMinor,
+        'paidAt': paidAt.toIso8601String(),
+        'accountId': accountId,
+        'splits': [
+          for (final s in portions)
+            {'categoryId': s.categoryId, 'amountMinor': s.amountMinor},
+        ],
+      },
+    ];
+    p.data['accountId'] = accountId;
+    p.data['revision'] = p.revision + 1;
+    if (next != null) {
+      final carried = [
+        for (final key in keys)
+          {
+            'categoryId': key,
+            'amountMinor':
+                residual[key]! -
+                portions
+                    .where((s) => s.categoryId == key)
+                    .fold<int>(0, (n, s) => n + s.amountMinor),
+          },
+      ];
+      final cumulativeCarry = <String, int>{};
+      for (final part in [
+        ...(p.data['carriedSplits'] as List? ?? []),
+        ...carried,
+      ]) {
+        final key = part['categoryId'] as String;
+        cumulativeCarry[key] =
+            (cumulativeCarry[key] ?? 0) + (part['amountMinor'] as int);
+      }
+      p.data['carriedSplits'] = [
+        for (final e in cumulativeCarry.entries)
+          {'categoryId': e.key, 'amountMinor': e.value},
+      ];
+      p.data['carries'] = [
+        ...(p.data['carries'] as List? ?? []),
+        {'to': next.id, 'amountMinor': remainder, 'splits': carried},
+      ];
+      p.data['carriedTo'] = next.id;
+      final nextSplits = <String, int>{
+        for (final s in next.splits) s.categoryId: s.amountMinor,
+      };
+      for (final part in carried) {
+        final key = part['categoryId'] as String;
+        nextSplits[key] = (nextSplits[key] ?? 0) + (part['amountMinor'] as int);
+      }
+      next.data['splits'] = [
+        for (final e in nextSplits.entries)
+          {'categoryId': e.key, 'amountMinor': e.value},
+      ];
+      p.data['carriedMinor'] =
+          (p.data['carriedMinor'] as int? ?? 0) + remainder;
+      next.data['amountMinor'] = next.amountMinor + remainder;
+      next.data['revision'] = next.revision + 1;
+      await _save(next);
+    }
+    await _save(p);
+    return tx;
+  });
+  Future<void> edit({
+    required String id,
+    required int expectedRevision,
+    required int amountMinor,
+    required DateTime dueDate,
+    String? accountId,
+    bool following = false,
+    int? expectedBookGeneration,
+  }) => database.transaction(() async {
+    _checkBook(expectedBookGeneration);
+    final p = await _checked(id, expectedRevision);
+    if (accountId != null) await _account(accountId);
+    final targets = following
+        ? (await list())
+              .where(
+                (q) =>
+                    q.planId == p.planId &&
+                    q.installmentNumber >= p.installmentNumber &&
+                    !q.cancelled &&
+                    q.remainingMinor > 0,
+              )
+              .toList()
+        : [p];
+    for (final q in targets) {
+      if (q.paidMinor > 0) continue;
+      if (amountMinor <= 0) throw const FormatException('Importe inválido.');
+      final old = q.amountMinor;
+      var allocated = 0;
+      final parts = <Map<String, dynamic>>[];
+      for (var i = 0; i < q.splits.length; i++) {
+        final split = q.splits[i];
+        final part = i == q.splits.length - 1
+            ? amountMinor - allocated
+            : amountMinor * split.amountMinor ~/ old;
+        allocated += part;
+        parts.add({'categoryId': split.categoryId, 'amountMinor': part});
+      }
+      q.data['splits'] = parts;
+      q.data['amountMinor'] = amountMinor;
+      final offset = q.installmentNumber - p.installmentNumber;
+      final month = DateTime(dueDate.year, dueDate.month + offset, 1);
+      final last = DateTime(month.year, month.month + 1, 0).day;
+      q.data['dueDate'] = DateTime(
+        month.year,
+        month.month,
+        dueDate.day > last ? last : dueDate.day,
+      ).toIso8601String();
+      if (accountId != null) q.data['accountId'] = accountId;
+      q.data['revision'] = q.revision + 1;
+      await _save(q);
+    }
+  });
+  Future<void> cancel(
+    String id, {
+    required int expectedRevision,
+    int? expectedBookGeneration,
+  }) => database.transaction(() async {
+    _checkBook(expectedBookGeneration);
+    final p = await _checked(id, expectedRevision);
+    p.data['cancelled'] = true;
+    p.data['revision'] = p.revision + 1;
+    await _save(p);
+  });
+  Future<void> updateReminders(
+    String id, {
+    required int expectedRevision,
+    required PaymentReminderSettings settings,
+    bool following = true,
+    int? expectedBookGeneration,
+  }) => database.transaction(() async {
+    _checkBook(expectedBookGeneration);
+    final p = await _checked(id, expectedRevision);
+    settings.validate();
+    final targets = following
+        ? (await list()).where(
+            (q) =>
+                q.planId == p.planId &&
+                q.installmentNumber >= p.installmentNumber &&
+                !q.cancelled &&
+                q.remainingMinor > 0,
+          )
+        : [p];
+    for (final q in targets) {
+      q.data['reminders'] = settings.toJson();
+      q.data['revision'] = q.revision + 1;
+      await _save(q);
+    }
+  });
+}
+
+FILE lib/features/payments/domain/pending_payment_models.dart
+import '../../transactions/domain/ledger_models.dart';
+
+final class PaymentReminderSettings {
+  const PaymentReminderSettings({
+    this.enabled = true,
+    this.daysBefore = 3,
+    this.hour = 9,
+    this.minute = 0,
+    this.onDueDate = true,
+  });
+  final bool enabled, onDueDate;
+  final int daysBefore, hour, minute;
+  void validate() {
+    if (daysBefore < 0 ||
+        daysBefore > 60 ||
+        hour < 0 ||
+        hour > 23 ||
+        minute < 0 ||
+        minute > 59) {
+      throw const FormatException('Recordatorio inválido.');
+    }
+  }
+
+  Map<String, dynamic> toJson() => {
+    'enabled': enabled,
+    'daysBefore': daysBefore,
+    'hour': hour,
+    'minute': minute,
+    'onDueDate': onDueDate,
+  };
+  factory PaymentReminderSettings.fromJson(Map j) => PaymentReminderSettings(
+    enabled: j['enabled'] as bool,
+    daysBefore: j['daysBefore'] as int,
+    hour: j['hour'] as int,
+    minute: j['minute'] as int,
+    onDueDate: j['onDueDate'] as bool,
+  );
+}
+
+final class PendingPayment {
+  PendingPayment(this.data);
+  final Map<String, dynamic> data;
+  String get id => data['id'] as String;
+  String get planId => data['planId'] as String;
+  int get installmentNumber => data['installmentNumber'] as int;
+  int get installmentCount => data['installmentCount'] as int;
+  int get amountMinor => data['amountMinor'] as int;
+  DateTime get dueDate => DateTime.parse(data['dueDate'] as String);
+  String get accountId => data['accountId'] as String;
+  String? get merchantId => data['merchantId'] as String?;
+  String get description => data['description'] as String;
+  String get note => data['note'] as String;
+  String? get sourceReference => data['sourceReference'] as String?;
+  PaymentChannel get paymentChannel =>
+      PaymentChannel.values.byName(data['paymentChannel'] as String);
+  int get revision => data['revision'] as int;
+  bool get cancelled => data['cancelled'] as bool;
+  List<Map<String, dynamic>> get payments => (data['payments'] as List)
+      .map((p) => Map<String, dynamic>.from(p as Map))
+      .toList();
+  List<Map<String, dynamic>>? effectivePayments;
+  int? effectivePaidMinor;
+  int get paidMinor =>
+      effectivePaidMinor ??
+      payments.fold(0, (n, p) => n + (p['amountMinor'] as int));
+  int get remainingMinor => cancelled
+      ? 0
+      : amountMinor - paidMinor - (data['carriedMinor'] as int? ?? 0);
+  List<SplitDraft> get splits => (data['splits'] as List)
+      .map(
+        (s) => SplitDraft(
+          categoryId: s['categoryId'] as String,
+          amountMinor: s['amountMinor'] as int,
+        ),
+      )
+      .toList();
+  Map<String, int> get remainingSplits {
+    final result = <String, int>{
+      for (final s in splits) s.categoryId: s.amountMinor,
+    };
+    for (final payment in effectivePayments ?? payments) {
+      for (final part in payment['splits'] as List? ?? []) {
+        final id = part['categoryId'] as String;
+        result[id] = (result[id] ?? 0) - (part['amountMinor'] as int);
+      }
+    }
+    for (final part in data['carriedSplits'] as List? ?? []) {
+      final id = part['categoryId'] as String;
+      result[id] = (result[id] ?? 0) - (part['amountMinor'] as int);
+    }
+    result.removeWhere((_, amount) => amount <= 0);
+    final total = result.values.fold<int>(0, (sum, amount) => sum + amount);
+    if (total != remainingMinor && total > 0) {
+      var allocated = 0;
+      final keys = result.keys.toList();
+      for (var i = 0; i < keys.length; i++) {
+        final amount = i == keys.length - 1
+            ? remainingMinor - allocated
+            : remainingMinor * result[keys[i]]! ~/ total;
+        result[keys[i]] = amount;
+        allocated += amount;
+      }
+      result.removeWhere((_, amount) => amount <= 0);
+    }
+    return result;
+  }
+
+  PaymentReminderSettings get reminders =>
+      PaymentReminderSettings.fromJson(data['reminders'] as Map);
+}
+
+FILE lib/features/templates/scheduled_template_service.dart
+import 'package:drift/drift.dart';
+
+import '../../core/database/app_database.dart';
+import '../../core/text/normalization.dart';
+import '../merchants/merchant_service.dart';
+import '../transactions/domain/ledger_models.dart';
+import 'manual_template_service.dart';
+import '../payments/domain/pending_payment_service.dart';
+
+String scheduledDate(DateTime value) =>
+    '${value.year.toString().padLeft(4, '0')}-${value.month.toString().padLeft(2, '0')}-${value.day.toString().padLeft(2, '0')}';
+DateTime parseScheduledDate(String value) {
+  final date = DateTime.parse(value);
+  if (scheduledDate(date) != value) {
+    throw const FormatException('Fecha de vencimiento inválida.');
+  }
+  return DateTime(date.year, date.month, date.day);
+}
+
+DateTime nextScheduledDate(DateTime due, Map<String, dynamic> schedule) {
+  final yearly = schedule['frequency'] == 'yearly';
+  final year = due.year + (yearly ? 1 : (due.month == 12 ? 1 : 0));
+  final month = yearly
+      ? (schedule['anchorMonth'] as int? ?? due.month)
+      : due.month % 12 + 1;
+  final last = DateTime(year, month + 1, 0).day;
+  final day = schedule['anchorDay'] as int? ?? due.day;
+  return DateTime(year, month, day > last ? last : day);
+}
+
+final class ScheduledProcessResult {
+  final List<String> registered = [];
+  final List<String> pending = [];
+}
+
+final class ScheduledTemplateService {
+  ScheduledTemplateService(this.database);
+  final AppDatabase database;
+  ManualTemplateService get templates => ManualTemplateService(database);
+
+  Future<void> pause(String id) => database.transaction(() async {
+    final template = await templates.read(id);
+    if (template == null) return;
+    final fields = Map<String, dynamic>.from(template.fields);
+    final schedule = Map<String, dynamic>.from(
+      fields['schedule'] as Map? ?? {},
+    );
+    schedule['enabled'] = false;
+    schedule['paused'] = true;
+    fields['schedule'] = schedule;
+    await templates.save(template.name, fields, id: id);
+  });
+
+  Future<void> skipPending(String id) => database.transaction(() async {
+    final template = await templates.read(id);
+    if (template == null) return;
+    final fields = Map<String, dynamic>.from(template.fields);
+    final schedule = Map<String, dynamic>.from(
+      fields['schedule'] as Map? ?? {},
+    );
+    if (schedule['pendingReason'] == null) return;
+    final due = parseScheduledDate(schedule['nextDate'] as String);
+    schedule['nextDate'] = scheduledDate(nextScheduledDate(due, schedule));
+    schedule.remove('pendingReason');
+    fields['schedule'] = schedule;
+    await templates.save(template.name, fields, id: id);
+  });
+
+  Future<ScheduledProcessResult> processDue({DateTime? now}) async {
+    final today = parseScheduledDate(scheduledDate(now ?? DateTime.now()));
+    final result = ScheduledProcessResult();
+    for (final initial in await templates.list()) {
+      for (var count = 0; count < 120; count++) {
+        final outcome = await database.transaction(() async {
+          final template = await templates.read(initial.id);
+          if (template == null) return 'stop';
+          final fields = Map<String, dynamic>.from(template.fields);
+          final schedule = Map<String, dynamic>.from(
+            fields['schedule'] as Map? ?? {},
+          );
+          if (schedule['enabled'] != true ||
+              schedule['pendingReason'] != null) {
+            return 'stop';
+          }
+          try {
+            final due = parseScheduledDate(schedule['nextDate'] as String);
+            if (due.isAfter(DateTime(today.year, today.month + 2, 0))) {
+              return 'stop';
+            }
+            if (!['monthly', 'yearly'].contains(schedule['frequency'])) {
+              throw StateError('Revisá la frecuencia.');
+            }
+            final fingerprint =
+                'scheduled:${template.id}:${scheduledDate(due)}';
+            final previous = await (database.select(
+              database.ledgerTransactions,
+            )..where((t) => t.externalFingerprint.equals(fingerprint))).get();
+            if (previous.isEmpty) {
+              if (fields['type'] != 'expense' ||
+                  fields['installments'] == true) {
+                throw StateError(
+                  'Revisá el tipo de gasto y el plan de cuotas.',
+                );
+              }
+              final amount = fields['amountMinor'] as int?;
+              if (amount == null || amount <= 0) {
+                throw StateError('Hace falta un importe fijo.');
+              }
+              final accountId = fields['from'] as String?;
+              final account = accountId == null
+                  ? null
+                  : await (database.select(
+                      database.accounts,
+                    )..where((t) => t.id.equals(accountId))).getSingleOrNull();
+              if (account == null || account.isArchived) {
+                throw StateError('Elegí una cuenta activa.');
+              }
+              final occurredAt = DateTime(
+                due.year,
+                due.month,
+                due.day,
+                12,
+              ).toUtc();
+              if (account.currencyCode != 'PYG') {
+                throw StateError('La programación admite PYG por ahora.');
+              }
+              String? merchantId = fields['merchantId'] as String?;
+              if (merchantId != null) {
+                final merchant = await (database.select(
+                  database.merchants,
+                )..where((t) => t.id.equals(merchantId!))).getSingleOrNull();
+                if (merchant == null || merchant.isArchived) {
+                  throw StateError('Revisá el comercio.');
+                }
+              } else if ((fields['merchant'] as String? ?? '')
+                  .trim()
+                  .isNotEmpty) {
+                final matches = await MerchantService(database)
+                    .matches(fields['merchant'] as String);
+                if (matches.length > 1) {
+                  throw StateError('El comercio es ambiguo.');
+                }
+                // Creating a new merchant happens only inside the successful ledger transaction.
+                merchantId = matches.isEmpty ? null : matches.single.id;
+              }
+              final notifications =
+                  await (database.select(database.paymentCandidates)..where(
+                        (t) =>
+                            t.status.equals('pending') &
+                            t.amountMinor.equals(amount) &
+                            t.occurredAt.isBetweenValues(
+                              occurredAt.subtract(const Duration(days: 3)),
+                              occurredAt.add(const Duration(days: 3)),
+                            ),
+                      ))
+                      .get();
+              for (final notification in notifications) {
+                final notificationAccount =
+                    notification.suggestedAccountId ??
+                    notification.suggestedFromAccountId;
+                final merchants = await MerchantService(database)
+                    .matches(notification.rawMerchant ?? '');
+                if (notificationAccount == accountId &&
+                    ((merchantId != null &&
+                            merchants.any((m) => m.id == merchantId)) ||
+                        (normalizeForMatching(
+                              fields['merchant'] as String? ?? '',
+                            ).isNotEmpty &&
+                            normalizeForMatching(
+                                  notification.rawMerchant ?? '',
+                                ) ==
+                                normalizeForMatching(
+                                  fields['merchant'] as String? ?? '',
+                                )))) {
+                  throw StateError(
+                    'Hay una notificación pendiente de esta compra.',
+                  );
+                }
+              }
+              if (merchantId != null) {
+                final duplicates =
+                    await (database.select(database.ledgerTransactions)..where(
+                          (t) =>
+                              t.fromAccountId.equals(accountId!) &
+                              t.merchantId.equals(merchantId!) &
+                              t.amountMinor.equals(amount) &
+                              t.status.equals('deleted').not() &
+                              t.occurredAt.isBetweenValues(
+                                occurredAt.subtract(const Duration(days: 3)),
+                                occurredAt.add(const Duration(days: 3)),
+                              ),
+                        ))
+                        .get();
+                if (duplicates.isNotEmpty) {
+                  throw StateError(
+                    'Posible duplicado: revisá el movimiento existente.',
+                  );
+                }
+              }
+              final splits = <SplitDraft>[];
+              if (fields['splitEnabled'] == true) {
+                for (final split in fields['splits'] as List? ?? []) {
+                  splits.add(
+                    SplitDraft(
+                      categoryId: split['category'] as String,
+                      amountMinor: split['amountMinor'] as int,
+                    ),
+                  );
+                }
+              } else if (fields['category'] != null) {
+                splits.add(
+                  SplitDraft(
+                    categoryId: fields['category'] as String,
+                    amountMinor: amount,
+                  ),
+                );
+              }
+              for (final split in splits) {
+                final category =
+                    await (database.select(database.categories)
+                          ..where((t) => t.id.equals(split.categoryId)))
+                        .getSingleOrNull();
+                if (category == null ||
+                    category.isArchived ||
+                    category.kind == 'income') {
+                  throw StateError('Revisá la categoría.');
+                }
+              }
+              await database.transaction(() async {
+                merchantId ??=
+                    (fields['merchant'] as String? ?? '').trim().isEmpty
+                    ? null
+                    : await MerchantService(database)
+                          .findOrCreate(fields['merchant'] as String);
+                final existing = (await PendingPaymentService(
+                  database,
+                ).list()).where((p) => p.sourceReference == fingerprint);
+                if (existing.isEmpty) {
+                  result.registered.add(template.name);
+                  await PendingPaymentService(database).createPlan(
+                    amountMinor: amount,
+                    installmentCount: 1,
+                    firstDueDate: due,
+                    accountId: account.id,
+                    merchantId: merchantId,
+                    description: template.name,
+                    note: fields['note'] as String? ?? '',
+                    paymentChannel: PaymentChannel.values.byName(
+                      fields['channel'] as String? ?? 'other',
+                    ),
+                    splits: splits,
+                    reminders: fields['reminders'] is Map
+                        ? PaymentReminderSettings.fromJson(
+                            fields['reminders'] as Map,
+                          )
+                        : const PaymentReminderSettings(),
+                    sourceReference: fingerprint,
+                  );
+                }
+              });
+            }
+            schedule['nextDate'] = scheduledDate(
+              nextScheduledDate(due, schedule),
+            );
+            fields['schedule'] = schedule;
+            await templates.save(template.name, fields, id: template.id);
+            return 'next';
+          } catch (error) {
+            schedule['pendingReason'] = error is StateError
+                ? error.message
+                : error is FormatException
+                ? error.message
+                : '$error';
+            fields['schedule'] = schedule;
+            await templates.save(template.name, fields, id: template.id);
+            result.pending.add(template.name);
+            return 'stop';
+          }
+        });
+        if (outcome == 'stop') break;
+      }
+    }
+    return result;
+  }
+}
+
+FILE lib/features/templates/manual_template_service.dart
+import 'dart:convert';
+
+import 'package:drift/drift.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../core/database/app_database.dart';
+import '../payments/domain/pending_payment_service.dart';
+import '../transactions/domain/ledger_models.dart';
+
+final class ManualTemplate {
+  const ManualTemplate(this.id, this.name, this.fields);
+  final String id;
+  final String name;
+  final Map<String, dynamic> fields;
+}
+
+final class ManualTemplateService {
+  ManualTemplateService(this.database);
+  final AppDatabase database;
+  static const prefix = 'manual_template:';
+  ManualTemplate _decode(SettingRecord row) {
+    final json = jsonDecode(row.value) as Map<String, dynamic>;
+    return ManualTemplate(
+      row.key.substring(prefix.length),
+      json['name'] as String,
+      Map<String, dynamic>.from(json['fields'] as Map),
+    );
+  }
+
+  Stream<List<ManualTemplate>> watch() =>
+      (database.select(
+        database.appSettings,
+      )..where((t) => t.key.like('$prefix%'))).watch().map(
+        (rows) => rows.map(_decode).toList()
+          ..sort(
+            (a, b) => a.name.toLowerCase().compareTo(b.name.toLowerCase()),
+          ),
+      );
+  Future<ManualTemplate?> read(String id) async {
+    final row = await (database.select(
+      database.appSettings,
+    )..where((t) => t.key.equals('$prefix$id'))).getSingleOrNull();
+    return row == null ? null : _decode(row);
+  }
+
+  Future<List<ManualTemplate>> list() async => (await (database.select(
+    database.appSettings,
+  )..where((t) => t.key.like('$prefix%'))).get()).map(_decode).toList();
+
+  Future<String> save(
+    String name,
+    Map<String, dynamic> fields, {
+    String? id,
+  }) => database.transaction(() async {
+    if (name.trim().isEmpty) {
+      throw const FormatException('Ingresá un nombre de plantilla.');
+    }
+    final schedule = fields['schedule'] as Map?;
+    if (schedule?['enabled'] == true && schedule?['pendingReason'] == null) {
+      final rawDate = schedule?['nextDate'];
+      final parsed = rawDate is String ? DateTime.tryParse(rawDate) : null;
+      if (parsed == null ||
+          rawDate !=
+              '${parsed.year.toString().padLeft(4, '0')}-${parsed.month.toString().padLeft(2, '0')}-${parsed.day.toString().padLeft(2, '0')}') {
+        throw const FormatException('Elegí una fecha válida.');
+      }
+      if (fields['type'] != 'expense' ||
+          fields['installments'] == true ||
+          fields['amountMinor'] is! int ||
+          (fields['amountMinor'] as int) <= 0 ||
+          fields['from'] == null ||
+          !['monthly', 'yearly'].contains(schedule?['frequency']) ||
+          schedule?['nextDate'] is! String) {
+        throw const FormatException(
+          'El registro automático requiere un gasto fijo, cuenta, frecuencia y fecha, sin plan de cuotas.',
+        );
+      }
+    }
+    final templateId = id ?? const Uuid().v4();
+    final previous = id == null ? null : await read(id);
+    final oldEconomic = Map<String, dynamic>.from(previous?.fields ?? {})
+      ..remove('schedule');
+    final newEconomic = Map<String, dynamic>.from(fields)..remove('schedule');
+    if (previous != null &&
+        (previous.name != name.trim() ||
+            jsonEncode(oldEconomic) != jsonEncode(newEconomic))) {
+      final service = PendingPaymentService(database);
+      final today = DateTime.now();
+      final day = DateTime(today.year, today.month, today.day);
+      final future = (await service.list())
+          .where(
+            (p) =>
+                (p.sourceReference ?? '').startsWith(
+                  'scheduled:$templateId:',
+                ) &&
+                !p.cancelled &&
+                p.paidMinor == 0 &&
+                !p.dueDate.isBefore(day),
+          )
+          .toList();
+      if (future.isNotEmpty) {
+        final splits = fields['splitEnabled'] == true
+            ? [
+                for (final part in fields['splits'] as List? ?? [])
+                  SplitDraft(
+                    categoryId: part['category'] as String,
+                    amountMinor: part['amountMinor'] as int,
+                  ),
+              ]
+            : fields['category'] != null
+            ? [
+                SplitDraft(
+                  categoryId: fields['category'] as String,
+                  amountMinor: fields['amountMinor'] as int,
+                ),
+              ]
+            : <SplitDraft>[];
+        final reminders = fields['reminders'] is Map
+            ? PaymentReminderSettings.fromJson(fields['reminders'] as Map)
+            : const PaymentReminderSettings();
+        final channel = PaymentChannel.values.byName(
+          fields['channel'] as String? ?? 'other',
+        );
+        if (fields['amountMinor'] is int &&
+            (fields['amountMinor'] as int) > 0) {
+          await service.validateDraft(
+            amountMinor: fields['amountMinor'] as int,
+            accountId: fields['from'] as String,
+            merchantId: fields['merchantId'] as String?,
+            paymentChannel: channel,
+            splits: splits,
+            reminders: reminders,
+            allowCredit: true,
+          );
+          for (final p in future) {
+            p.data.addAll({
+              'description': name.trim(),
+              'note': fields['note'] as String? ?? '',
+              'revision': p.revision + 1,
+              'amountMinor': fields['amountMinor'],
+              'accountId': fields['from'],
+              'merchantId': fields['merchantId'],
+              'paymentChannel': channel.name,
+              'reminders': reminders.toJson(),
+              'splits': [
+                for (final split in splits)
+                  {
+                    'categoryId': split.categoryId,
+                    'amountMinor': split.amountMinor,
+                  },
+              ],
+            });
+            await database
+                .into(database.appSettings)
+                .insertOnConflictUpdate(
+                  AppSettingsCompanion.insert(
+                    key: '${PendingPaymentService.prefix}${p.id}',
+                    value: jsonEncode(p.data),
+                    updatedAt: DateTime.now().toUtc(),
+                  ),
+                );
+          }
+        }
+      }
+    }
+    await database
+        .into(database.appSettings)
+        .insertOnConflictUpdate(
+          AppSettingsCompanion.insert(
+            key: '$prefix$templateId',
+            value: jsonEncode({'name': name.trim(), 'fields': fields}),
+            updatedAt: DateTime.now().toUtc(),
+          ),
+        );
+    return templateId;
+  });
+
+  Future<void> delete(String id) async {
+    await (database.delete(
+      database.appSettings,
+    )..where((t) => t.key.equals('$prefix$id'))).go();
+  }
+}
+
+FILE lib/core/backup/backup_service.dart
+import 'dart:io';
+import 'dart:convert';
+import 'dart:isolate';
+
+import 'package:sqlite3/sqlite3.dart' as sqlite;
+
+import '../database/encrypted_storage.dart';
+import '../security/device_crypto.dart';
+
+import 'package:drift/drift.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:uuid/uuid.dart';
+
+import '../database/app_database.dart';
+import '../errors/app_exception.dart';
+import 'backup_codec.dart';
+import '../../features/transactions/domain/ledger_models.dart';
+
+final class BackupService {
+  BackupService(
+    this.database, {
+    BackupCodec? codec,
+    Uuid? uuid,
+    this.directory,
+    this.encryptionKey,
+  }) : codec = codec ?? BackupCodec(),
+       uuid = uuid ?? const Uuid();
+
+  final Directory? directory;
+  final Future<String> Function()? encryptionKey;
+  final AppDatabase database;
+  final BackupCodec codec;
+  final Uuid uuid;
+
+  Future<Uint8List> createBytes(String password) async {
+    final tempDirectory = directory ?? await getTemporaryDirectory();
+    final snapshot = File(
+      p.join(tempDirectory.path, 'backup-${uuid.v4()}.sqlite'),
+    );
+    try {
+      final escapedPath = snapshot.path.replaceAll("'", "''");
+      await database.customStatement("VACUUM INTO '$escapedPath'");
+      final accountCountExpression = database.accounts.id.count();
+      final accountCountQuery = database.selectOnly(database.accounts)
+        ..addColumns([accountCountExpression]);
+      final accounts = await accountCountQuery
+          .map((row) => row.read(accountCountExpression) ?? 0)
+          .getSingle();
+      final transactionCountExpression = database.ledgerTransactions.id.count();
+      final transactionCountQuery = database.selectOnly(
+        database.ledgerTransactions,
+      )..addColumns([transactionCountExpression]);
+      final transactions = await transactionCountQuery
+          .map((row) => row.read(transactionCountExpression) ?? 0)
+          .getSingle();
+      final currencies =
+          await (database.selectOnly(database.accounts, distinct: true)
+                ..addColumns([database.accounts.currencyCode]))
+              .map((row) => row.read(database.accounts.currencyCode)!)
+              .get();
+      if (!isPlaintextDatabase(snapshot)) {
+        final key = await (encryptionKey?.call() ?? DeviceCrypto.databaseKey());
+        final path = snapshot.path;
+        await portableSnapshotInBackground(path, key);
+      }
+      return await codec.encode(
+        databaseBytes: await snapshot.readAsBytes(),
+        password: password,
+        summary: BackupSummary(
+          createdAt: DateTime.now().toUtc(),
+          schemaVersion: database.schemaVersion,
+          accountCount: accounts,
+          transactionCount: transactions,
+          currencyCodes: currencies,
+        ),
+      );
+    } finally {
+      if (await snapshot.exists()) await snapshot.delete();
+    }
+  }
+
+  Future<bool> createWithPicker(String password) async {
+    final bytes = await createBytes(password);
+    final now = DateTime.now();
+    final name =
+        'finanzas-${now.year}${now.month.toString().padLeft(2, '0')}${now.day.toString().padLeft(2, '0')}.finbackup';
+    final path = await FilePicker.saveFile(
+      dialogTitle: 'Guardar backup cifrado',
+      fileName: name,
+      type: FileType.custom,
+      allowedExtensions: const ['finbackup'],
+      bytes: bytes,
+    );
+    return path != null;
+  }
+
+  Future<(Uint8List, BackupSummary)?> pickForRestore() async {
+    final result = await FilePicker.pickFile(
+      type: FileType.custom,
+      allowedExtensions: const ['finbackup'],
+    );
+    if (result == null) return null;
+    final Uint8List data;
+    try {
+      data = await result.readAsBytes();
+    } catch (_) {
+      throw const BackupException('No se pudo leer el archivo elegido.');
+    }
+    return (data, codec.inspect(data));
+  }
+
+  Future<void> restore(
+    Uint8List encrypted,
+    String password, {
+    void Function(String)? onProgress,
+  }) async {
+    onProgress?.call('Descifrando backup…');
+    final decoded = await codec.decode(encrypted, password: password);
+    if (decoded.summary.schemaVersion != database.schemaVersion) {
+      throw const BackupException(
+        'La versión de la base del backup no es compatible.',
+      );
+    }
+    final tempDirectory = directory ?? await getTemporaryDirectory();
+    final candidate = File(
+      p.join(tempDirectory.path, 'restore-${uuid.v4()}.sqlite'),
+    );
+    try {
+      onProgress?.call('Validando datos…');
+      await candidate.writeAsBytes(decoded.databaseBytes, flush: true);
+      final expected = <String, List<String>>{};
+      for (final table in database.allTables) {
+        expected[table.actualTableName] = table.$columns
+            .map((column) => column.$name)
+            .toList();
+      }
+      final path = candidate.path;
+      final version = database.schemaVersion;
+      final rows = await validateSnapshotInBackground(path, version, expected);
+      onProgress?.call('Guardando copia de seguridad…');
+      final safetyDirectory =
+          directory ?? await getApplicationSupportDirectory();
+      final safety = File(
+        p.join(safetyDirectory.path, 'before-restore-${uuid.v4()}.finbackup'),
+      );
+      await safety.writeAsBytes(await createBytes(password), flush: true);
+      onProgress?.call('Restaurando datos…');
+      await database.transaction(() async {
+        database.restoreGeneration++;
+        await database.customStatement('PRAGMA defer_foreign_keys = ON');
+        for (final table in expected.keys) {
+          await database.customStatement('DELETE FROM "$table"');
+        }
+        for (final entry in rows.entries) {
+          final columns = expected[entry.key]!;
+          final names = columns.map((name) => '"$name"').join(',');
+          final placeholders = List.filled(columns.length, '?').join(',');
+          for (final row in entry.value) {
+            await database.customStatement(
+              'INSERT INTO "${entry.key}" ($names) VALUES ($placeholders)',
+              columns.map((column) => row[column]).toList(),
+            );
+          }
+        }
+        if ((await database.customSelect('PRAGMA foreign_key_check').get())
+            .isNotEmpty) {
+          throw const BackupException(
+            'El backup contiene referencias de datos inválidas.',
+          );
+        }
+      });
+      database.notifyUpdates({
+        for (final table in database.allTables)
+          TableUpdate(table.actualTableName),
+      });
+      onProgress?.call('Restauración completada');
+    } finally {
+      if (await candidate.exists()) await candidate.delete();
+    }
+  }
+}
+
+Map<String, List<Map<String, Object?>>> readValidatedSnapshot(
+  String path,
+  int version,
+  Map<String, List<String>> expected,
+) {
+  final source = sqlite.sqlite3.open(path, mode: sqlite.OpenMode.readOnly);
+  try {
+    if (source.select('PRAGMA integrity_check').single.values.single != 'ok' ||
+        source.select('PRAGMA foreign_key_check').isNotEmpty ||
+        source.select('PRAGMA user_version').single.values.single != version) {
+      throw const BackupException(
+        'La base del backup no pasó la validación de integridad.',
+      );
+    }
+    final actual = source
+        .select(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'",
+        )
+        .map((row) => row['name'] as String)
+        .toSet();
+    if (actual.length != expected.length ||
+        !actual.containsAll(expected.keys)) {
+      throw const BackupException(
+        'El esquema del backup no corresponde a esta app.',
+      );
+    }
+    final result = <String, List<Map<String, Object?>>>{};
+    for (final entry in expected.entries) {
+      final columns = source
+          .select('PRAGMA table_info("${entry.key}")')
+          .map((row) => row['name'] as String)
+          .toSet();
+      if (columns.length != entry.value.length ||
+          !columns.containsAll(entry.value)) {
+        throw const BackupException(
+          'El esquema del backup contiene columnas incompatibles.',
+        );
+      }
+      result[entry.key] = source
+          .select('SELECT * FROM "${entry.key}"')
+          .map((row) => Map<String, Object?>.from(row))
+          .toList();
+    }
+    final accounts = {
+      for (final row in result['accounts'] ?? <Map<String, Object?>>[])
+        row['id'],
+    };
+    final merchants = {
+      for (final row in result['merchants'] ?? <Map<String, Object?>>[])
+        row['id'],
+    };
+    final categories = {
+      for (final row in result['categories'] ?? <Map<String, Object?>>[])
+        row['id'],
+    };
+    final transactions = {
+      for (final row in result['transactions'] ?? <Map<String, Object?>>[])
+        row['id']: row,
+    };
+    final pending = <String, Map<String, dynamic>>{};
+    final linkedTransactions = <String>{};
+    for (final row in result['app_settings'] ?? <Map<String, Object?>>[]) {
+      final key = row['key'] as String;
+      if (!key.startsWith('pending_payment:')) continue;
+      if (!key.startsWith('pending_payment:v1:')) {
+        throw const FormatException('Unknown payment version');
+      }
+      final p = Map<String, dynamic>.from(
+        jsonDecode(row['value'] as String) as Map,
+      );
+      if (p['version'] != 1 ||
+          key != 'pending_payment:v1:${p['id']}' ||
+          !accounts.contains(p['accountId']) ||
+          (p['merchantId'] != null && !merchants.contains(p['merchantId'])) ||
+          p['amountMinor'] is! int ||
+          (p['amountMinor'] as int) <= 0 ||
+          p['revision'] is! int ||
+          (p['revision'] as int) < 0 ||
+          p['cancelled'] is! bool ||
+          p['planId'] is! String ||
+          p['description'] is! String ||
+          p['note'] is! String ||
+          !PaymentChannel.values.any(
+            (channel) => channel.name == p['paymentChannel'],
+          ) ||
+          p['installmentNumber'] is! int ||
+          p['installmentCount'] is! int ||
+          (p['installmentCount'] as int) < 1 ||
+          (p['installmentCount'] as int) > 120 ||
+          (p['installmentNumber'] as int) < 1 ||
+          (p['installmentNumber'] as int) > (p['installmentCount'] as int)) {
+        throw const FormatException('Invalid pending payment');
+      }
+      DateTime.parse(p['dueDate'] as String);
+      var total = 0;
+      final splitCategories = <String>{};
+      for (final part in p['splits'] as List) {
+        if (!categories.contains(part['categoryId']) ||
+            !splitCategories.add(part['categoryId'] as String) ||
+            part['amountMinor'] is! int ||
+            (part['amountMinor'] as int) < 0) {
+          throw const FormatException('Invalid split');
+        }
+        total += part['amountMinor'] as int;
+      }
+      if ((p['splits'] as List).isNotEmpty && total != p['amountMinor']) {
+        throw const FormatException('Invalid split total');
+      }
+      var paid = 0;
+      final seen = <String>{};
+      for (final payment in p['payments'] as List) {
+        final id = payment['transactionId'] as String;
+        final tx = transactions[id];
+        if (!seen.add(id) ||
+            !linkedTransactions.add(id) ||
+            tx == null ||
+            tx['type'] != 'expense' ||
+            !(tx['external_fingerprint'] as String? ?? '').startsWith(
+              'pending:${p['id']}:',
+            ) ||
+            payment['amountMinor'] is! int ||
+            (payment['amountMinor'] as int) <= 0 ||
+            !accounts.contains(payment['accountId'])) {
+          throw const FormatException('Invalid payment reference');
+        }
+        if (tx['status'] == 'confirmed') paid += tx['amount_minor'] as int;
+      }
+      if ((p['carriedMinor'] as int? ?? 0) < 0 ||
+          paid + (p['carriedMinor'] as int? ?? 0) > (p['amountMinor'] as int)) {
+        throw const FormatException('Overpaid obligation');
+      }
+      final reminders = p['reminders'] as Map;
+      if (reminders['enabled'] is! bool ||
+          reminders['onDueDate'] is! bool ||
+          (reminders['hour'] as int) < 0 ||
+          (reminders['hour'] as int) > 23 ||
+          (reminders['minute'] as int) < 0 ||
+          (reminders['minute'] as int) > 59 ||
+          (reminders['daysBefore'] as int) < 0 ||
+          (reminders['daysBefore'] as int) > 60) {
+        throw const FormatException('Invalid reminders');
+      }
+      pending[p['id'] as String] = p;
+    }
+    for (final p in pending.values) {
+      var carriedTotal = 0;
+      for (final part in p['carriedSplits'] as List? ?? []) {
+        if (!categories.contains(part['categoryId']) ||
+            part['amountMinor'] is! int ||
+            (part['amountMinor'] as int) < 0) {
+          throw const FormatException('Invalid carry category');
+        }
+        carriedTotal += part['amountMinor'] as int;
+      }
+      if ((p['splits'] as List).isNotEmpty &&
+          carriedTotal != (p['carriedMinor'] as int? ?? 0)) {
+        throw const FormatException('Invalid carry total');
+      }
+      var historyTotal = 0;
+      for (final carry in p['carries'] as List? ?? []) {
+        final target = pending[carry['to']];
+        if (target == null ||
+            target['planId'] != p['planId'] ||
+            (target['installmentNumber'] as int) <=
+                (p['installmentNumber'] as int) ||
+            carry['amountMinor'] is! int ||
+            (carry['amountMinor'] as int) <= 0) {
+          throw const FormatException('Invalid carry history');
+        }
+        historyTotal += carry['amountMinor'] as int;
+      }
+      if (p['carries'] != null &&
+          historyTotal != (p['carriedMinor'] as int? ?? 0)) {
+        throw const FormatException('Invalid carry history total');
+      }
+      if (p['carriedTo'] != null) {
+        final next = pending[p['carriedTo']];
+        if (next == null ||
+            next['planId'] != p['planId'] ||
+            (next['installmentNumber'] as int) <=
+                (p['installmentNumber'] as int)) {
+          throw const FormatException('Invalid carry reference');
+        }
+      }
+    }
+    return result;
+  } on BackupException {
+    rethrow;
+  } catch (_) {
+    throw const BackupException('No se pudo validar la base del backup.');
+  } finally {
+    source.close();
+  }
+}
+
+Future<void> portableSnapshotInBackground(String path, String key) =>
+    Isolate.run(() => makePortableSnapshot(path, key));
+Future<Map<String, List<Map<String, Object?>>>> validateSnapshotInBackground(
+  String path,
+  int version,
+  Map<String, List<String>> expected,
+) => Isolate.run(() => readValidatedSnapshot(path, version, expected));
+
+Future<void> cleanupBackupWorkingFiles() async {
+  final directory = await getTemporaryDirectory();
+  final owned = RegExp(
+    r'^(backup|restore)-[0-9a-f-]{36}\.sqlite(?:-(?:wal|shm))?$',
+  );
+  await for (final entry in directory.list(followLinks: false)) {
+    if (entry is File && owned.hasMatch(p.basename(entry.path))) {
+      await entry.delete();
+    }
+  }
+}
+
+FILE lib/features/transactions/data/ledger_service.dart
+import 'dart:convert';
+
+import 'package:drift/drift.dart';
+import 'package:uuid/uuid.dart';
+
+import '../../../core/database/app_database.dart';
+import '../../../core/errors/app_exception.dart';
+import '../../../core/money/money.dart';
+import '../domain/ledger_models.dart';
+import '../domain/posting_calculator.dart';
+import '../domain/payment_channel_policy.dart';
+import '../../installments/domain/installment_service.dart';
+
+final class LedgerService {
+  LedgerService(this.database, {Uuid? uuid, PostingCalculator? calculator})
+    : uuid = uuid ?? const Uuid(),
+      calculator = calculator ?? const PostingCalculator();
+
+  final AppDatabase database;
+  final Uuid uuid;
+  final PostingCalculator calculator;
+
+  Future<String> create(TransactionDraft draft) =>
+      database.transaction(() async {
+        await _validateRefund(draft);
+        final from = await _loadAccount(draft.fromAccountId);
+        final to = await _loadAccount(draft.toAccountId);
+        PaymentChannelPolicy.validate(draft, from: from, to: to);
+        final postings = calculator.calculate(draft, from: from, to: to);
+        final now = DateTime.now().toUtc();
+        final transactionId = uuid.v4();
+
+        await database.transaction(() async {
+          await database
+              .into(database.ledgerTransactions)
+              .insert(
+                LedgerTransactionsCompanion.insert(
+                  id: transactionId,
+                  type: draft.type.name,
+                  status: draft.status.name,
+                  source: draft.source.name,
+                  occurredAt: draft.occurredAt.toUtc(),
+                  occurredTimeZone: Value(draft.timeZone),
+                  createdAt: now,
+                  updatedAt: now,
+                  currencyCode: draft.amount.currencyCode,
+                  amountMinor: draft.amount.minorUnits,
+                  fromAccountId: Value(draft.fromAccountId),
+                  toAccountId: Value(draft.toAccountId),
+                  merchantId: Value(draft.merchantId),
+                  description: Value(draft.description.trim()),
+                  note: Value(draft.note.trim()),
+                  paymentChannel: Value(draft.paymentChannel.name),
+                  externalFingerprint: Value(draft.externalFingerprint),
+                  sourceReference: Value(draft.sourceReference),
+                  importBatchId: Value(draft.importBatchId),
+                  parentTransactionId: Value(draft.parentTransactionId),
+                ),
+              );
+
+          for (final posting in postings) {
+            await database
+                .into(database.accountPostings)
+                .insert(
+                  AccountPostingsCompanion.insert(
+                    id: uuid.v4(),
+                    transactionId: transactionId,
+                    accountId: posting.accountId,
+                    deltaMinor: posting.deltaMinor,
+                    currencyCode: draft.amount.currencyCode,
+                    occurredAt: draft.occurredAt.toUtc(),
+                    createdAt: now,
+                  ),
+                );
+          }
+
+          for (final split in draft.splits) {
+            await database
+                .into(database.transactionSplits)
+                .insert(
+                  TransactionSplitsCompanion.insert(
+                    id: uuid.v4(),
+                    transactionId: transactionId,
+                    categoryId: split.categoryId,
+                    amountMinor: split.amountMinor,
+                    note: Value(split.note),
+                  ),
+                );
+          }
+
+          await database
+              .into(database.auditLogs)
+              .insert(
+                AuditLogsCompanion.insert(
+                  id: uuid.v4(),
+                  entityType: 'transaction',
+                  entityId: transactionId,
+                  action: 'created',
+                  changesJson: Value(jsonEncode({'source': draft.source.name})),
+                  createdAt: now,
+                ),
+              );
+        });
+        return transactionId;
+      });
+
+  Future<int> balance(String accountId) async {
+    final account = await (database.select(
+      database.accounts,
+    )..where((t) => t.id.equals(accountId))).getSingle();
+    final postings = await (database.select(
+      database.accountPostings,
+    )..where((t) => t.accountId.equals(accountId))).get();
+    return account.initialBalanceMinor +
+        postings.fold<int>(0, (sum, p) => sum + p.deltaMinor);
+  }
+
+  Future<String> reconcile({
+    required String accountId,
+    required int targetMinor,
+    required int expectedBalance,
+    required String note,
+  }) => database.transaction(() async {
+    final account = await _loadAccount(accountId);
+    final current = await balance(accountId);
+    if (current != expectedBalance) {
+      throw const ValidationException(
+        'El saldo cambió mientras conciliabas. Volvé a intentarlo.',
+      );
+    }
+    final delta = targetMinor - current;
+    if (delta == 0) {
+      throw const ValidationException(
+        'El saldo ya coincide; no hace falta un ajuste.',
+      );
+    }
+    final increaseByInflow = account!.isLiability ? delta < 0 : delta > 0;
+    return create(
+      TransactionDraft(
+        type: TransactionType.adjustment,
+        source: TransactionSource.adjustment,
+        amount: Money(delta.abs(), currencyCode: account.currencyCode),
+        occurredAt: DateTime.now(),
+        fromAccountId: increaseByInflow ? null : accountId,
+        toAccountId: increaseByInflow ? accountId : null,
+        description: 'Conciliación de saldo',
+        note: note,
+      ),
+    );
+  });
+
+  Future<String> refund({
+    required String purchaseId,
+    required int amountMinor,
+    required DateTime occurredAt,
+    String note = '',
+  }) => database.transaction(() async {
+    final purchase =
+        await (database.select(database.ledgerTransactions)..where(
+              (t) =>
+                  t.id.equals(purchaseId) &
+                  t.status.equals('confirmed') &
+                  t.type.equals('expense'),
+            ))
+            .getSingleOrNull();
+    if (purchase == null) {
+      throw const ValidationException('Elegí una compra confirmada.');
+    }
+    final originals =
+        await (database.select(database.transactionSplits)
+              ..where((t) => t.transactionId.equals(purchaseId))
+              ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+            .get();
+    final previous =
+        await (database.select(database.ledgerTransactions)..where(
+              (t) =>
+                  t.parentTransactionId.equals(purchaseId) &
+                  t.type.equals('refund') &
+                  t.status.equals('confirmed'),
+            ))
+            .get();
+    final priorSplits = await (database.select(
+      database.transactionSplits,
+    )..where((t) => t.transactionId.isIn(previous.map((r) => r.id)))).get();
+    final weights = <String, int>{};
+    for (final split in originals) {
+      weights.update(
+        split.categoryId,
+        (v) => v + split.amountMinor,
+        ifAbsent: () => split.amountMinor,
+      );
+    }
+    for (final split in priorSplits) {
+      if (weights.containsKey(split.categoryId)) {
+        weights[split.categoryId] =
+            (weights[split.categoryId]! - split.amountMinor).clamp(0, 1 << 62);
+      }
+    }
+    final remainingWeight = weights.values.fold<int>(0, (sum, v) => sum + v);
+    int cumulative = 0, assigned = 0;
+    final splits = <SplitDraft>[];
+    for (final entry in weights.entries) {
+      if (remainingWeight == 0) break;
+      cumulative += entry.value;
+      final total = amountMinor * cumulative ~/ remainingWeight;
+      final portion = total - assigned;
+      assigned = total;
+      if (portion > 0) {
+        splits.add(SplitDraft(categoryId: entry.key, amountMinor: portion));
+      }
+    }
+    return create(
+      TransactionDraft(
+        type: TransactionType.refund,
+        amount: Money(amountMinor, currencyCode: purchase.currencyCode),
+        occurredAt: occurredAt,
+        toAccountId: purchase.fromAccountId,
+        merchantId: purchase.merchantId,
+        description: 'Devolución · ${purchase.description}',
+        note: note,
+        paymentChannel: PaymentChannel.other,
+        parentTransactionId: purchaseId,
+        splits: splits,
+      ),
+    );
+  });
+
+  Future<void> _validateRefund(
+    TransactionDraft draft, {
+    String? excludingId,
+  }) async {
+    if (draft.type != TransactionType.refund ||
+        draft.parentTransactionId == null) {
+      return;
+    }
+    final parent = await (database.select(
+      database.ledgerTransactions,
+    )..where((t) => t.id.equals(draft.parentTransactionId!))).getSingleOrNull();
+    if (parent == null ||
+        parent.type != 'expense' ||
+        parent.status != 'confirmed' ||
+        parent.currencyCode != draft.amount.currencyCode ||
+        parent.fromAccountId != draft.toAccountId) {
+      throw const ValidationException(
+        'La devolución debe corresponder a una compra activa y su cuenta de origen.',
+      );
+    }
+    if (DateTime(
+      draft.occurredAt.toLocal().year,
+      draft.occurredAt.toLocal().month,
+      draft.occurredAt.toLocal().day,
+    ).isBefore(
+      DateTime(
+        parent.occurredAt.toLocal().year,
+        parent.occurredAt.toLocal().month,
+        parent.occurredAt.toLocal().day,
+      ),
+    )) {
+      throw const ValidationException(
+        'La devolución no puede ser anterior a la compra.',
+      );
+    }
+    final children =
+        await (database.select(database.ledgerTransactions)..where(
+              (t) =>
+                  t.parentTransactionId.equals(parent.id) &
+                  t.type.equals('refund') &
+                  t.status.equals('confirmed'),
+            ))
+            .get();
+    final already = children
+        .where((r) => r.id != excludingId)
+        .fold<int>(0, (sum, r) => sum + r.amountMinor);
+    if (already + draft.amount.minorUnits > parent.amountMinor) {
+      throw const ValidationException(
+        'Las devoluciones no pueden superar el importe de la compra.',
+      );
+    }
+  }
+
+  Future<void> update(
+    String id,
+    TransactionDraft draft, {
+    DateTime? expectedUpdatedAt,
+    int? installmentCount,
+    DateTime? firstInstallmentDate,
+    bool preserveInstallments = true,
+  }) => database.transaction(() async {
+    final old = await (database.select(
+      database.ledgerTransactions,
+    )..where((t) => t.id.equals(id))).getSingleOrNull();
+    if (old == null || old.status != 'confirmed') {
+      throw const ValidationException(
+        'El movimiento ya no está disponible para editar.',
+      );
+    }
+    if (expectedUpdatedAt != null && old.updatedAt != expectedUpdatedAt) {
+      throw const ValidationException(
+        'El movimiento cambió. Volvé a abrirlo antes de guardar.',
+      );
+    }
+    if (!['expense', 'income', 'transfer'].contains(old.type)) {
+      throw const ValidationException(
+        'Para corregir una devolución o ajuste, eliminá el registro y crealo de nuevo.',
+      );
+    }
+    if (old.type != draft.type.name ||
+        old.currencyCode != draft.amount.currencyCode) {
+      throw const ValidationException(
+        'No se puede cambiar la naturaleza ni la moneda de un movimiento existente.',
+      );
+    }
+    final children =
+        await (database.select(database.ledgerTransactions)..where(
+              (t) =>
+                  t.parentTransactionId.equals(id) &
+                  t.status.equals('confirmed'),
+            ))
+            .get();
+    final refunded = children
+        .where((r) => r.type == 'refund')
+        .fold<int>(0, (sum, r) => sum + r.amountMinor);
+    if (refunded > draft.amount.minorUnits ||
+        (refunded > 0 && old.fromAccountId != draft.fromAccountId)) {
+      throw const ValidationException(
+        'La compra tiene devoluciones; conservá su cuenta y un importe que las cubra.',
+      );
+    }
+    if (refunded > 0) {
+      final refundSplits =
+          await (database.select(database.transactionSplits)..where(
+                (t) => t.transactionId.isIn(
+                  children.where((r) => r.type == 'refund').map((r) => r.id),
+                ),
+              ))
+              .get();
+      final credited = <String, int>{};
+      for (final s in refundSplits) {
+        credited.update(
+          s.categoryId,
+          (v) => v + s.amountMinor,
+          ifAbsent: () => s.amountMinor,
+        );
+      }
+      final proposed = <String, int>{};
+      for (final s in draft.splits) {
+        proposed.update(
+          s.categoryId,
+          (v) => v + s.amountMinor,
+          ifAbsent: () => s.amountMinor,
+        );
+      }
+      if (credited.entries.any((e) => (proposed[e.key] ?? 0) < e.value)) {
+        throw const ValidationException(
+          'Las categorías deben cubrir las devoluciones ya registradas.',
+        );
+      }
+    }
+    final from = await _loadAccount(
+      draft.fromAccountId,
+      allowArchived: old.fromAccountId == draft.fromAccountId,
+    );
+    final to = await _loadAccount(
+      draft.toAccountId,
+      allowArchived: old.toAccountId == draft.toAccountId,
+    );
+    PaymentChannelPolicy.validate(draft, from: from, to: to);
+    final postings = calculator.calculate(draft, from: from, to: to);
+    final plan = await (database.select(
+      database.installmentPlans,
+    )..where((t) => t.transactionId.equals(id))).getSingleOrNull();
+    final oldDay = old.occurredAt.toLocal(),
+        newDay = draft.occurredAt.toLocal();
+    final samePurchaseDay =
+        oldDay.year == newDay.year &&
+        oldDay.month == newDay.month &&
+        oldDay.day == newDay.day;
+    final count =
+        installmentCount ??
+        (preserveInstallments ? plan?.installmentCount : null);
+    if (count != null &&
+        (draft.type != TransactionType.expense ||
+            from?.type != AccountType.creditCard)) {
+      throw const ValidationException(
+        'Las cuotas requieren una compra con tarjeta de crédito.',
+      );
+    }
+    await _refreshPendingLink(id, newAmount: draft.amount.minorUnits);
+    final clockNow = DateTime.now().toUtc();
+    final now = clockNow.difference(old.updatedAt).inSeconds < 1
+        ? old.updatedAt.add(const Duration(seconds: 1))
+        : clockNow;
+    await (database.update(
+      database.ledgerTransactions,
+    )..where((t) => t.id.equals(id))).write(
+      LedgerTransactionsCompanion(
+        amountMinor: Value(draft.amount.minorUnits),
+        occurredAt: Value(draft.occurredAt.toUtc()),
+        fromAccountId: Value(draft.fromAccountId),
+        toAccountId: Value(draft.toAccountId),
+        merchantId: Value(draft.merchantId),
+        description: Value(draft.description.trim()),
+        note: Value(draft.note.trim()),
+        paymentChannel: Value(draft.paymentChannel.name),
+        updatedAt: Value(now),
+      ),
+    );
+    await (database.delete(
+      database.accountPostings,
+    )..where((t) => t.transactionId.equals(id))).go();
+    // Preserve split identity/order: reports allocate quota residues by split ID.
+    // Editing a note must not move one guaraní between historical months.
+    final previousSplits = await (database.select(
+      database.transactionSplits,
+    )..where((t) => t.transactionId.equals(id))).get();
+    await (database.delete(
+      database.transactionSplits,
+    )..where((t) => t.transactionId.equals(id))).go();
+    for (final posting in postings) {
+      await database
+          .into(database.accountPostings)
+          .insert(
+            AccountPostingsCompanion.insert(
+              id: uuid.v4(),
+              transactionId: id,
+              accountId: posting.accountId,
+              deltaMinor: posting.deltaMinor,
+              currencyCode: draft.amount.currencyCode,
+              occurredAt: draft.occurredAt.toUtc(),
+              createdAt: now,
+            ),
+          );
+    }
+    for (final split in draft.splits) {
+      final previousIndex = previousSplits.indexWhere(
+        (part) => part.categoryId == split.categoryId,
+      );
+      final splitId = previousIndex < 0
+          ? uuid.v4()
+          : previousSplits.removeAt(previousIndex).id;
+      await database
+          .into(database.transactionSplits)
+          .insert(
+            TransactionSplitsCompanion.insert(
+              id: splitId,
+              transactionId: id,
+              categoryId: split.categoryId,
+              amountMinor: split.amountMinor,
+              note: Value(split.note),
+            ),
+          );
+    }
+    await (database.delete(
+      database.installmentPlans,
+    )..where((t) => t.transactionId.equals(id))).go();
+    if (count != null) {
+      await InstallmentService(database).attachPlan(
+        transactionId: id,
+        count: count,
+        firstPeriod:
+            firstInstallmentDate ??
+            (plan != null && samePurchaseDay
+                ? plan.firstPeriod.toUtc()
+                : draft.occurredAt.toLocal()),
+        preserveHistoricalDate:
+            plan != null &&
+            samePurchaseDay &&
+            (firstInstallmentDate == null ||
+                firstInstallmentDate == plan.firstPeriod.toUtc()),
+      );
+    }
+    await database
+        .into(database.auditLogs)
+        .insert(
+          AuditLogsCompanion.insert(
+            id: uuid.v4(),
+            entityType: 'transaction',
+            entityId: id,
+            action: 'edited',
+            changesJson: Value(
+              jsonEncode({
+                'before': {
+                  'amountMinor': old.amountMinor,
+                  'from': old.fromAccountId,
+                  'to': old.toAccountId,
+                },
+                'after': {
+                  'amountMinor': draft.amount.minorUnits,
+                  'from': draft.fromAccountId,
+                  'to': draft.toAccountId,
+                },
+              }),
+            ),
+            createdAt: now,
+          ),
+        );
+  });
+
+  Future<void> softDelete(String transactionId) async {
+    final now = DateTime.now().toUtc();
+    await database.transaction(() async {
+      final children =
+          await (database.select(database.ledgerTransactions)..where(
+                (t) =>
+                    t.parentTransactionId.equals(transactionId) &
+                    t.status.equals('confirmed'),
+              ))
+              .get();
+      if (children.isNotEmpty) {
+        throw const ValidationException(
+          'Eliminá primero las devoluciones vinculadas a esta compra.',
+        );
+      }
+      final changed =
+          await (database.update(
+            database.ledgerTransactions,
+          )..where((table) => table.id.equals(transactionId))).write(
+            LedgerTransactionsCompanion(
+              status: const Value('deleted'),
+              deletedAt: Value(now),
+              updatedAt: Value(now),
+            ),
+          );
+      await _refreshPendingLink(transactionId);
+      if (changed != 1) {
+        throw const ValidationException('El movimiento ya no existe.');
+      }
+      await (database.delete(
+        database.accountPostings,
+      )..where((table) => table.transactionId.equals(transactionId))).go();
+      await database
+          .into(database.auditLogs)
+          .insert(
+            AuditLogsCompanion.insert(
+              id: uuid.v4(),
+              entityType: 'transaction',
+              entityId: transactionId,
+              action: 'soft_deleted',
+              createdAt: now,
+            ),
+          );
+    });
+  }
+
+  Future<void> restore(String transactionId) => database.transaction(() async {
+    final row = await (database.select(
+      database.ledgerTransactions,
+    )..where((table) => table.id.equals(transactionId))).getSingleOrNull();
+    if (row == null || row.status != TransactionStatus.deleted.name) {
+      throw const ValidationException('No se puede restaurar este movimiento.');
+    }
+    final draft = TransactionDraft(
+      type: TransactionType.values.byName(row.type),
+      amount: Money(row.amountMinor, currencyCode: row.currencyCode),
+      occurredAt: row.occurredAt,
+      status: TransactionStatus.confirmed,
+      source: TransactionSource.values.byName(row.source),
+      fromAccountId: row.fromAccountId,
+      toAccountId: row.toAccountId,
+      merchantId: row.merchantId,
+      description: row.description,
+      note: row.note,
+      paymentChannel: PaymentChannel.values.byName(row.paymentChannel),
+      externalFingerprint: row.externalFingerprint,
+      sourceReference: row.sourceReference,
+      importBatchId: row.importBatchId,
+      parentTransactionId: row.parentTransactionId,
+      timeZone: row.occurredTimeZone,
+    );
+    await _validateRefund(draft, excludingId: row.id);
+    await _refreshPendingLink(transactionId, newAmount: row.amountMinor);
+    final from = await _loadAccount(row.fromAccountId);
+    final to = await _loadAccount(row.toAccountId);
+    final postings = calculator.calculate(draft, from: from, to: to);
+    final now = DateTime.now().toUtc();
+    if (row.externalFingerprint != null) {
+      final active =
+          await (database.select(database.ledgerTransactions)..where(
+                (table) =>
+                    table.externalFingerprint.equals(row.externalFingerprint!) &
+                    table.status.equals('deleted').not(),
+              ))
+              .get();
+      if (active.isNotEmpty) {
+        throw const ValidationException(
+          'Esta compra ya tiene otro movimiento activo.',
+        );
+      }
+    }
+    await (database.update(
+      database.ledgerTransactions,
+    )..where((table) => table.id.equals(transactionId))).write(
+      LedgerTransactionsCompanion(
+        status: const Value('confirmed'),
+        deletedAt: const Value(null),
+        updatedAt: Value(now),
+      ),
+    );
+    for (final posting in postings) {
+      await database
+          .into(database.accountPostings)
+          .insert(
+            AccountPostingsCompanion.insert(
+              id: uuid.v4(),
+              transactionId: transactionId,
+              accountId: posting.accountId,
+              deltaMinor: posting.deltaMinor,
+              currencyCode: row.currencyCode,
+              occurredAt: row.occurredAt,
+              createdAt: now,
+            ),
+          );
+    }
+  });
+
+  // Pending obligations retain their historical links when a payment changes.
+  Future<void> _refreshPendingLink(
+    String transactionId, {
+    int? newAmount,
+  }) async {
+    final rows = await (database.select(
+      database.appSettings,
+    )..where((s) => s.key.like('pending_payment:v1:%'))).get();
+    for (final row in rows) {
+      final pending = Map<String, dynamic>.from(jsonDecode(row.value) as Map);
+      final links = pending['payments'] as List;
+      if (!links.any((p) => p['transactionId'] == transactionId)) continue;
+      if (newAmount != null) {
+        var otherPaid = 0;
+        for (final link in links) {
+          if (link['transactionId'] == transactionId) continue;
+          final tx =
+              await (database.select(
+                    database.ledgerTransactions,
+                  )..where((t) => t.id.equals(link['transactionId'] as String)))
+                  .getSingleOrNull();
+          if (tx?.status == 'confirmed') otherPaid += tx!.amountMinor;
+        }
+        if (newAmount + otherPaid + (pending['carriedMinor'] as int? ?? 0) >
+            (pending['amountMinor'] as int)) {
+          throw const ValidationException(
+            'El pago supera el importe pendiente.',
+          );
+        }
+      }
+      pending['revision'] = (pending['revision'] as int) + 1;
+      await database
+          .into(database.appSettings)
+          .insertOnConflictUpdate(
+            AppSettingsCompanion.insert(
+              key: row.key,
+              value: jsonEncode(pending),
+              updatedAt: DateTime.now().toUtc(),
+            ),
+          );
+    }
+  }
+
+  Future<AccountSnapshot?> _loadAccount(
+    String? accountId, {
+    bool allowArchived = false,
+  }) async {
+    if (accountId == null) return null;
+    final row = await (database.select(
+      database.accounts,
+    )..where((table) => table.id.equals(accountId))).getSingleOrNull();
+    if (row == null || (row.isArchived && !allowArchived)) {
+      throw const ValidationException(
+        'La cuenta seleccionada no está disponible.',
+      );
+    }
+    return AccountSnapshot(
+      id: row.id,
+      type: AccountType.values.byName(row.type),
+      currencyCode: row.currencyCode,
+    );
+  }
+}
+
+FILE lib/features/reports/data/report_service.dart
+import 'package:drift/drift.dart';
+
+import '../../../core/database/app_database.dart';
+import '../../payments/domain/pending_payment_service.dart';
+
+typedef ReportRequest = ({
+  DateTime start,
+  DateTime end,
+  String? category,
+  bool monthlyInstallments,
+});
+typedef AnalysisRequest = ({ReportRequest period, String? account});
+
+class ReportTotals {
+  const ReportTotals({
+    required this.income,
+    required this.expenses,
+    required this.refunds,
+    this.pendingExpenses = 0,
+  });
+  final int income, expenses, refunds, pendingExpenses;
+  int get netExpenses => expenses - refunds;
+  int get balance => income - netExpenses;
+}
+
+class ReportGroup {
+  const ReportGroup({
+    required this.id,
+    required this.name,
+    required this.totals,
+    required this.expenseCount,
+  });
+  final String? id;
+  final String name;
+  final ReportTotals totals;
+  final int expenseCount;
+}
+
+class ReportMonth {
+  const ReportMonth(this.month, this.totals);
+  final DateTime month;
+  final ReportTotals totals;
+}
+
+class ReportAnalysis {
+  const ReportAnalysis({
+    required this.totals,
+    required this.previous,
+    required this.previousStart,
+    required this.previousEnd,
+    required this.months,
+    required this.categories,
+    required this.merchants,
+    required this.accounts,
+    required this.expenseCount,
+    required this.unclassifiedAmount,
+    required this.unclassifiedCount,
+  });
+  final ReportTotals totals, previous;
+  final DateTime previousStart, previousEnd;
+  final List<ReportMonth> months;
+  final List<ReportGroup> categories, merchants, accounts;
+  final int expenseCount, unclassifiedAmount, unclassifiedCount;
+  int get pendingMinor => totals.pendingExpenses;
+  int get difference => totals.netExpenses - previous.netExpenses;
+  double? get changePercent =>
+      previous.netExpenses > 0 ? difference * 100 / previous.netExpenses : null;
+}
+
+class ReportService {
+  ReportService(this.database);
+  final AppDatabase database;
+  Stream<ReportTotals> watch(ReportRequest request) =>
+      watchAnalysis((period: request, account: null)).map((a) => a.totals);
+
+  Stream<ReportAnalysis> watchAnalysis(AnalysisRequest request) {
+    final period = request.period;
+    final calendarMonth =
+        period.start.day == 1 &&
+        period.end == DateTime(period.start.year, period.start.month + 1);
+    // Calendar months compare to the previous calendar month; custom ranges to
+    // the preceding range with the same number of calendar days, including DST.
+    final days = DateTime.utc(period.end.year, period.end.month, period.end.day)
+        .difference(
+          DateTime.utc(period.start.year, period.start.month, period.start.day),
+        )
+        .inDays;
+    final previousStart = calendarMonth
+        ? DateTime(period.start.year, period.start.month - 1)
+        : DateTime(
+            period.start.year,
+            period.start.month,
+            period.start.day - days,
+          );
+    final trendStart = calendarMonth
+        ? DateTime(period.start.year, period.start.month - 5)
+        : DateTime(period.start.year, period.start.month);
+    final queryStart = previousStart.isBefore(trendStart)
+        ? previousStart
+        : trendStart;
+    return database
+        .customSelect(
+          '''
+      SELECT t.id, t.type, t.amount_minor, t.occurred_at, t.merchant_id,
+        m.name AS merchant_name,
+        CASE WHEN t.type = 'expense' THEN t.from_account_id ELSE t.to_account_id END AS account_id,
+        a.name AS account_name, ip.id AS plan_id,
+        ie.id AS entry_id, ie.period_start, ie.amount_minor AS quota, ie.installment_number,
+        s.id AS split_id, s.category_id, s.amount_minor AS split_amount, c.name AS category_name
+      FROM transactions t
+      LEFT JOIN merchants m ON m.id = t.merchant_id
+      LEFT JOIN accounts a ON a.id = CASE WHEN t.type = 'expense' THEN t.from_account_id ELSE t.to_account_id END
+      LEFT JOIN installment_plans ip ON ip.transaction_id = t.id
+      LEFT JOIN installment_entries ie ON ie.plan_id = ip.id
+      LEFT JOIN transaction_splits s ON s.transaction_id = t.id
+      LEFT JOIN categories c ON c.id = s.category_id
+      WHERE t.status = 'confirmed' AND t.currency_code = 'PYG'
+        AND t.type IN ('income', 'expense', 'refund')
+        AND (? IS NULL OR a.id = ?)
+        AND ((t.occurred_at >= ? AND t.occurred_at < ?) OR EXISTS (
+          SELECT 1 FROM installment_entries eligible WHERE eligible.plan_id = ip.id
+          AND eligible.period_start >= ? AND eligible.period_start < ?
+        ))
+      ORDER BY t.id, ie.installment_number, s.id
+    ''',
+          variables: [
+            Variable<String>(request.account),
+            Variable<String>(request.account),
+            Variable.withDateTime(queryStart.toUtc()),
+            Variable.withDateTime(period.end.toUtc()),
+            Variable.withDateTime(
+              DateTime.utc(
+                queryStart.year,
+                queryStart.month,
+                queryStart.day,
+                12,
+              ),
+            ),
+            Variable.withDateTime(
+              DateTime.utc(
+                period.end.year,
+                period.end.month,
+                period.end.day,
+                12,
+              ),
+            ),
+          ],
+          readsFrom: {
+            database.ledgerTransactions,
+            database.transactionSplits,
+            database.installmentPlans,
+            database.installmentEntries,
+            database.categories,
+            database.merchants,
+            database.accounts,
+            database.appSettings,
+          },
+        )
+        .watch()
+        .asyncMap((rows) async {
+          final transactions = <String, _Transaction>{};
+          for (final row in rows) {
+            final t = transactions.putIfAbsent(
+              row.read<String>('id'),
+              () => _Transaction(row),
+            );
+            final split = row.readNullable<String>('split_id');
+            if (split != null) {
+              t.splits[split] = (
+                id: row.readNullable<String>('category_id'),
+                name:
+                    row.readNullable<String>('category_name') ??
+                    'Sin categoría',
+                amount: row.read<int>('split_amount'),
+              );
+            }
+            final entry = row.readNullable<String>('entry_id');
+            if (entry != null) {
+              final raw = row.read<DateTime>('period_start').toUtc();
+              t.entries[entry] = (
+                date: DateTime(raw.year, raw.month, raw.day),
+                amount: row.read<int>('quota'),
+                number: row.read<int>('installment_number'),
+              );
+            }
+          }
+          final current = _Totals(), previous = _Totals();
+          final categories = <String?, _Group>{},
+              merchants = <String?, _Group>{},
+              accounts = <String?, _Group>{};
+          final months = <DateTime, _Totals>{};
+          for (
+            var month = trendStart;
+            month.isBefore(period.end);
+            month = DateTime(month.year, month.month + 1)
+          ) {
+            months[month] = _Totals();
+          }
+          final expenseIds = <String>{}, unclassifiedIds = <String>{};
+          var unclassified = 0;
+          for (final transaction in transactions.values) {
+            for (final impact in transaction.impacts(
+              period.monthlyInstallments,
+            )) {
+              final parts = period.category == null
+                  ? impact.parts
+                  : impact.parts.where((p) => p.id == period.category).toList();
+              final amount = parts.fold<int>(0, (sum, p) => sum + p.amount);
+              if (amount == 0) continue;
+              if (!impact.date.isBefore(
+                    calendarMonth ? trendStart : period.start,
+                  ) &&
+                  impact.date.isBefore(period.end)) {
+                months[DateTime(impact.date.year, impact.date.month)]?.add(
+                  transaction.type,
+                  amount,
+                );
+              }
+              if (!impact.date.isBefore(previousStart) &&
+                  impact.date.isBefore(period.start)) {
+                previous.add(transaction.type, amount);
+              }
+              if (impact.date.isBefore(period.start) ||
+                  !impact.date.isBefore(period.end)) {
+                continue;
+              }
+              current.add(transaction.type, amount);
+              accounts
+                  .putIfAbsent(
+                    transaction.accountId,
+                    () =>
+                        _Group(transaction.accountId, transaction.accountName),
+                  )
+                  .add(transaction, amount);
+              if (transaction.type == 'income') continue;
+              merchants
+                  .putIfAbsent(
+                    transaction.merchantId,
+                    () => _Group(
+                      transaction.merchantId,
+                      transaction.merchantName,
+                    ),
+                  )
+                  .add(transaction, amount);
+              for (final part in parts) {
+                if (part.amount == 0) continue;
+                categories
+                    .putIfAbsent(part.id, () => _Group(part.id, part.name))
+                    .add(transaction, part.amount);
+                if (part.id == null && transaction.type == 'expense') {
+                  unclassified += part.amount;
+                  unclassifiedIds.add(transaction.id);
+                }
+              }
+              if (transaction.type == 'expense') expenseIds.add(transaction.id);
+            }
+          }
+          List<ReportGroup> groups(Map<String?, _Group> values) =>
+              values.values.map((g) => g.value).toList()..sort((a, b) {
+                final byAmount = b.totals.expenses.compareTo(a.totals.expenses);
+                return byAmount != 0 ? byAmount : a.name.compareTo(b.name);
+              });
+          var pending = 0;
+          for (final p in await PendingPaymentService(database).list()) {
+            if (p.cancelled ||
+                p.remainingMinor <= 0 ||
+                p.dueDate.isBefore(period.start) ||
+                !p.dueDate.isBefore(period.end) ||
+                (request.account != null && p.accountId != request.account)) {
+              continue;
+            }
+            if (period.category == null) {
+              pending += p.remainingMinor;
+            } else {
+              pending += p.remainingSplits[period.category] ?? 0;
+            }
+          }
+          return ReportAnalysis(
+            totals: ReportTotals(
+              income: current.value.income,
+              expenses: current.value.expenses,
+              refunds: current.value.refunds,
+              pendingExpenses: pending,
+            ),
+            previous: previous.value,
+            previousStart: previousStart,
+            previousEnd: period.start,
+            months: months.entries
+                .map((e) => ReportMonth(e.key, e.value.value))
+                .toList(),
+            categories: groups(categories),
+            merchants: groups(merchants),
+            accounts: groups(accounts),
+            expenseCount: expenseIds.length,
+            unclassifiedAmount: unclassified,
+            unclassifiedCount: unclassifiedIds.length,
+          );
+        });
+  }
+}
+
+typedef _Part = ({String? id, String name, int amount});
+typedef _Entry = ({DateTime date, int amount, int number});
+
+class _Impact {
+  const _Impact(this.date, this.parts);
+  final DateTime date;
+  final List<_Part> parts;
+}
+
+class _Transaction {
+  _Transaction(QueryRow row)
+    : id = row.read<String>('id'),
+      type = row.read<String>('type'),
+      amount = row.read<int>('amount_minor'),
+      date = row.read<DateTime>('occurred_at').toLocal(),
+      merchantId = row.readNullable<String>('merchant_id'),
+      merchantName =
+          row.readNullable<String>('merchant_name') ?? 'Sin comercio',
+      accountId = row.readNullable<String>('account_id'),
+      accountName = row.readNullable<String>('account_name') ?? 'Sin cuenta',
+      hasPlan = row.readNullable<String>('plan_id') != null;
+  final String id, type, merchantName, accountName;
+  final String? merchantId, accountId;
+  final int amount;
+  final DateTime date;
+  final bool hasPlan;
+  final splits = <String, _Part>{};
+  final entries = <String, _Entry>{};
+  Iterable<_Impact> impacts(bool quotas) sync* {
+    final weights = splits.values.toList();
+    if (weights.isEmpty) {
+      weights.add((id: null, name: 'Sin categoría', amount: amount));
+    }
+    if (!quotas || type != 'expense' || !hasPlan) {
+      yield _Impact(date, weights);
+      return;
+    }
+    final schedule = entries.values.toList()
+      ..sort((a, b) => a.number.compareTo(b.number));
+    final remaining = [for (final part in weights) part.amount];
+    // Allocate each quota from remaining category weights. Integer rounding is
+    // deterministic and the entire plan sums exactly to each original split.
+    for (final entry in schedule) {
+      final totalWeight = remaining.fold<int>(0, (sum, v) => sum + v);
+      if (totalWeight <= 0) continue;
+      var cumulative = 0, assigned = 0;
+      final parts = <_Part>[];
+      for (var i = 0; i < weights.length; i++) {
+        cumulative += remaining[i];
+        final total = entry.amount * cumulative ~/ totalWeight;
+        final portion = total - assigned;
+        assigned = total;
+        remaining[i] -= portion;
+        parts.add((id: weights[i].id, name: weights[i].name, amount: portion));
+      }
+      yield _Impact(entry.date, parts);
+    }
+  }
+}
+
+class _Totals {
+  int income = 0, expenses = 0, refunds = 0;
+  void add(String type, int amount) {
+    switch (type) {
+      case 'income':
+        income += amount;
+      case 'expense':
+        expenses += amount;
+      case 'refund':
+        refunds += amount;
+    }
+  }
+
+  ReportTotals get value =>
+      ReportTotals(income: income, expenses: expenses, refunds: refunds);
+}
+
+class _Group {
+  _Group(this.id, this.name);
+  final String? id;
+  final String name;
+  final totals = _Totals();
+  final ids = <String>{};
+  void add(_Transaction t, int amount) {
+    totals.add(t.type, amount);
+    if (t.type == 'expense') ids.add(t.id);
+  }
+
+  ReportGroup get value => ReportGroup(
+    id: id,
+    name: name,
+    totals: totals.value,
+    expenseCount: ids.length,
+  );
+}
+
+FILE test/pending_payment_service_test.dart
+import 'package:drift/native.dart';
+import 'package:finanzas_locales/core/money/money.dart';
+import 'package:finanzas_locales/core/errors/app_exception.dart';
+import 'package:finanzas_locales/features/transactions/data/ledger_service.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:finanzas_locales/core/database/app_database.dart';
+import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
+import 'package:finanzas_locales/features/transactions/domain/ledger_models.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_service.dart';
+
+void main() {
+  test(
+    'plans conserve integer totals and only payment creates ledger',
+    () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await AccountsService(db).createAccount(
+        const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+      );
+      final service = PendingPaymentService(db);
+      final dues = await service.createPlan(
+        amountMinor: 100001,
+        installmentCount: 3,
+        firstDueDate: DateTime(2026, 1, 31),
+        accountId: account,
+      );
+      expect(dues.map((e) => e.amountMinor), [33333, 33333, 33335]);
+      expect(dues[1].dueDate, DateTime(2026, 2, 28));
+      expect(dues[2].dueDate, DateTime(2026, 3, 31));
+      expect(await db.select(db.ledgerTransactions).get(), isEmpty);
+      await service.pay(
+        id: dues.first.id,
+        expectedRevision: 0,
+        amountMinor: 10000,
+        paidAt: DateTime(2026, 2, 1),
+        accountId: account,
+        carryRemainder: true,
+      );
+      final after = await service.list();
+      expect(after.fold<int>(0, (n, p) => n + p.remainingMinor), 90001);
+      expect(await db.select(db.ledgerTransactions).get(), hasLength(1));
+      await expectLater(
+        service.pay(
+          id: dues.first.id,
+          expectedRevision: 0,
+          amountMinor: 10000,
+          paidAt: DateTime.now(),
+          accountId: account,
+        ),
+        throwsStateError,
+      );
+    },
+  );
+  test('deleted payment reopens obligation; stale restore cannot pay; last carry fails', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final p = (await service.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: DateTime(2026, 1, 1),
+      accountId: account,
+    )).single;
+    await expectLater(
+      service.pay(
+        id: p.id,
+        expectedRevision: 0,
+        amountMinor: 50,
+        paidAt: DateTime.now(),
+        accountId: account,
+        carryRemainder: true,
+      ),
+      throwsStateError,
+    );
+    final tx = await service.pay(
+      id: p.id,
+      expectedRevision: 0,
+      amountMinor: 100,
+      paidAt: DateTime.now(),
+      accountId: account,
+    );
+    expect((await service.read(p.id))!.remainingMinor, 0);
+    await LedgerService(db).softDelete(tx);
+    expect((await service.read(p.id))!.remainingMinor, 100);
+    db.restoreGeneration++;
+    await expectLater(
+      service.pay(
+        id: p.id,
+        expectedRevision: 2,
+        amountMinor: 100,
+        paidAt: DateTime.now(),
+        accountId: account,
+        expectedBookGeneration: 0,
+      ),
+      throwsStateError,
+    );
+    await service.pay(
+      id: p.id,
+      expectedRevision: 2,
+      amountMinor: 100,
+      paidAt: DateTime.now(),
+      accountId: account,
+      expectedBookGeneration: 1,
+    );
+    expect((await service.read(p.id))!.remainingMinor, 0);
+  });
+  test('exact categories survive partial payments and carry; competing payment loses', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final now = DateTime.now();
+    for (final id in ['a', 'b']) {
+      await db
+          .into(db.categories)
+          .insert(
+            CategoriesCompanion.insert(
+              id: id,
+              name: id,
+              kind: 'expense',
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+    }
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final dues = await service.createPlan(
+      amountMinor: 100001,
+      installmentCount: 3,
+      firstDueDate: DateTime(2026, 1, 1),
+      accountId: account,
+      splits: const [
+        SplitDraft(categoryId: 'a', amountMinor: 60001),
+        SplitDraft(categoryId: 'b', amountMinor: 40000),
+      ],
+    );
+    expect(dues.fold<int>(0, (n, p) => n + p.splits.first.amountMinor), 60001);
+    final outcomes = await Future.wait([
+      for (var i = 0; i < 2; i++)
+        service
+            .pay(
+              id: dues.first.id,
+              expectedRevision: 0,
+              amountMinor: 10000,
+              paidAt: now,
+              accountId: account,
+              carryRemainder: true,
+            )
+            .then<Object>((v) => v, onError: (Object e) => e),
+    ]);
+    expect(outcomes.whereType<String>(), hasLength(1));
+    expect(outcomes.whereType<StateError>(), hasLength(1));
+    final pending = await service.list();
+    expect(
+      pending.fold<int>(
+        0,
+        (n, p) => n + p.remainingSplits.values.fold<int>(0, (a, b) => a + b),
+      ),
+      90001,
+    );
+    await service.edit(
+      id: dues.last.id,
+      expectedRevision: 0,
+      amountMinor: 40000,
+      dueDate: DateTime(2026, 4, 1),
+      following: true,
+    );
+    expect((await service.read(dues.first.id))!.paidMinor, 10000);
+  });
+  test(
+    'reminder bounds are enforced before creating or updating obligations',
+    () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final account = await AccountsService(db).createAccount(
+        const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+      );
+      final service = PendingPaymentService(db);
+      await expectLater(
+        service.createPlan(
+          amountMinor: 100,
+          installmentCount: 1,
+          firstDueDate: DateTime(2026),
+          accountId: account,
+          reminders: const PaymentReminderSettings(daysBefore: 61),
+        ),
+        throwsFormatException,
+      );
+      expect(await service.list(), isEmpty);
+      final p = (await service.createPlan(
+        amountMinor: 100,
+        installmentCount: 1,
+        firstDueDate: DateTime(2026),
+        accountId: account,
+      )).single;
+      await expectLater(
+        service.updateReminders(
+          p.id,
+          expectedRevision: 0,
+          settings: const PaymentReminderSettings(daysBefore: 61),
+        ),
+        throwsFormatException,
+      );
+    },
+  );
+  test('edited linked payment categories and amount determine remaining category debt', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final now = DateTime.now();
+    for (final id in ['a', 'b']) {
+      await db
+          .into(db.categories)
+          .insert(
+            CategoriesCompanion.insert(
+              id: id,
+              name: id,
+              kind: 'expense',
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+    }
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final p = (await service.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: DateTime(2026),
+      accountId: account,
+      splits: const [
+        SplitDraft(categoryId: 'a', amountMinor: 60),
+        SplitDraft(categoryId: 'b', amountMinor: 40),
+      ],
+    )).single;
+    final tx = await service.pay(
+      id: p.id,
+      expectedRevision: 0,
+      amountMinor: 50,
+      paidAt: now,
+      accountId: account,
+    );
+    await LedgerService(db).update(
+      tx,
+      TransactionDraft(
+        type: TransactionType.expense,
+        amount: const Money(20, currencyCode: 'PYG'),
+        occurredAt: now,
+        fromAccountId: account,
+        paymentChannel: PaymentChannel.other,
+        splits: const [SplitDraft(categoryId: 'b', amountMinor: 20)],
+      ),
+    );
+    final after = (await service.read(p.id))!;
+    expect(after.remainingMinor, 80);
+    expect(after.remainingSplits, {'a': 60, 'b': 20});
+    await LedgerService(db).softDelete(tx);
+    final deleted = (await service.read(p.id))!;
+    expect(deleted.remainingSplits, {'a': 60, 'b': 40});
+  });
+  test('linked ledger changes invalidate payment revision and cannot overpay or restore twice', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final now = DateTime.now();
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final ledger = LedgerService(db);
+    final p = (await service.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: DateTime(2026),
+      accountId: account,
+    )).single;
+    final tx = await service.pay(
+      id: p.id,
+      expectedRevision: 0,
+      amountMinor: 60,
+      paidAt: now,
+      accountId: account,
+    );
+    await expectLater(
+      ledger.update(
+        tx,
+        TransactionDraft(
+          type: TransactionType.expense,
+          amount: const Money(101),
+          occurredAt: now,
+          fromAccountId: account,
+        ),
+      ),
+      throwsA(isA<ValidationException>()),
+    );
+    await ledger.update(
+      tx,
+      TransactionDraft(
+        type: TransactionType.expense,
+        amount: const Money(50),
+        occurredAt: now,
+        fromAccountId: account,
+      ),
+    );
+    await expectLater(
+      service.pay(
+        id: p.id,
+        expectedRevision: 1,
+        amountMinor: 50,
+        paidAt: now,
+        accountId: account,
+      ),
+      throwsStateError,
+    );
+    await ledger.softDelete(tx);
+    final reopened = (await service.read(p.id))!;
+    await service.pay(
+      id: p.id,
+      expectedRevision: reopened.revision,
+      amountMinor: 100,
+      paidAt: now,
+      accountId: account,
+    );
+    await expectLater(ledger.restore(tx), throwsA(isA<ValidationException>()));
+    expect((await service.read(p.id))!.remainingMinor, 0);
+  });
+  test('recategorized payment never produces negative category debt', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final now = DateTime.now();
+    for (final id in ['a', 'b']) {
+      await db
+          .into(db.categories)
+          .insert(
+            CategoriesCompanion.insert(
+              id: id,
+              name: id,
+              kind: 'expense',
+              createdAt: now,
+              updatedAt: now,
+            ),
+          );
+    }
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final p = (await service.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: DateTime(2026),
+      accountId: account,
+      splits: const [
+        SplitDraft(categoryId: 'a', amountMinor: 60),
+        SplitDraft(categoryId: 'b', amountMinor: 40),
+      ],
+    )).single;
+    final tx = await service.pay(
+      id: p.id,
+      expectedRevision: 0,
+      amountMinor: 80,
+      paidAt: now,
+      accountId: account,
+    );
+    await LedgerService(db).update(
+      tx,
+      TransactionDraft(
+        type: TransactionType.expense,
+        amount: const Money(80),
+        occurredAt: now,
+        fromAccountId: account,
+        splits: const [SplitDraft(categoryId: 'b', amountMinor: 80)],
+      ),
+    );
+    expect((await service.read(p.id))!.remainingSplits, {'a': 20});
+  });
+  test(
+    'reopened carried installment preserves cumulative category carry',
+    () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final now = DateTime.now();
+      for (final id in ['a', 'b']) {
+        await db
+            .into(db.categories)
+            .insert(
+              CategoriesCompanion.insert(
+                id: id,
+                name: id,
+                kind: 'expense',
+                createdAt: now,
+                updatedAt: now,
+              ),
+            );
+      }
+      final account = await AccountsService(db).createAccount(
+        const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+      );
+      final service = PendingPaymentService(db);
+      final dues = await service.createPlan(
+        amountMinor: 200,
+        installmentCount: 2,
+        firstDueDate: DateTime(2026),
+        accountId: account,
+        splits: const [
+          SplitDraft(categoryId: 'a', amountMinor: 120),
+          SplitDraft(categoryId: 'b', amountMinor: 80),
+        ],
+      );
+      final first = dues.first;
+      final tx = await service.pay(
+        id: first.id,
+        expectedRevision: 0,
+        amountMinor: 50,
+        paidAt: now,
+        accountId: account,
+        carryRemainder: true,
+      );
+      await LedgerService(db).softDelete(tx);
+      final reopened = (await service.read(first.id))!;
+      await service.pay(
+        id: first.id,
+        expectedRevision: reopened.revision,
+        amountMinor: 25,
+        paidAt: now,
+        accountId: account,
+        carryRemainder: true,
+      );
+      final after = await service.list();
+      expect(after.map((p) => p.remainingMinor), [0, 175]);
+      expect(after.first.data['carriedMinor'], 75);
+      final carried = after.first.data['carriedSplits'] as List;
+      expect(carried.fold<int>(0, (n, p) => n + (p['amountMinor'] as int)), 75);
+      expect(after.last.remainingSplits, {'a': 105, 'b': 70});
+    },
+  );
+  test('archived original merchant and categories remain payable historical references', () async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final now = DateTime.now();
+    await db
+        .into(db.categories)
+        .insert(
+          CategoriesCompanion.insert(
+            id: 'a',
+            name: 'a',
+            kind: 'expense',
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+    await db
+        .into(db.merchants)
+        .insert(
+          MerchantsCompanion.insert(
+            id: 'shop',
+            name: 'Shop',
+            normalizedName: 'shop',
+            createdAt: now,
+            updatedAt: now,
+          ),
+        );
+    final account = await AccountsService(db).createAccount(
+      const CreateAccountDraft(name: 'Banco', type: AccountType.bank),
+    );
+    final service = PendingPaymentService(db);
+    final p = (await service.createPlan(
+      amountMinor: 100,
+      installmentCount: 1,
+      firstDueDate: DateTime(2026),
+      accountId: account,
+      merchantId: 'shop',
+      splits: const [SplitDraft(categoryId: 'a', amountMinor: 100)],
+    )).single;
+    await db.customStatement(
+      "UPDATE categories SET is_archived = 1 WHERE id = 'a'",
+    );
+    await db.customStatement(
+      "UPDATE merchants SET is_archived = 1 WHERE id = 'shop'",
+    );
+    await service.pay(
+      id: p.id,
+      expectedRevision: 0,
+      amountMinor: 100,
+      paidAt: now,
+      accountId: account,
+    );
+    expect((await service.read(p.id))!.remainingMinor, 0);
+    expect(
+      (await db.select(db.transactionSplits).get()).single.categoryId,
+      'a',
+    );
+  });
+}

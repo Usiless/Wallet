@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "packageName": "com.google.android.gms",
+  "notificationKey": "fixture-wallet-1",
+  "id": 101,
+  "postTime": 1784368800000,
+  "title": "ECOP OBLIGADO",
+  "text": "PYG145,500 · SUDAM_GOOGLE ••5962",
+  "bigText": null,
+  "subText": "Google Wallet",
+  "summaryText": null,
+  "textLines": [],
+  "isUpdate": false
+}

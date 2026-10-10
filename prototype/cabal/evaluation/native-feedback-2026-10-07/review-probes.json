@@ -1,0 +1,25 @@
+{
+  "fixture": {
+    "type": "expense",
+    "amount": 123456,
+    "from": "bank",
+    "to": "",
+    "category": "food",
+    "splits": [
+      {
+        "category": "food",
+        "amount": 60000
+      },
+      {
+        "category": "home",
+        "amount": 63456
+      }
+    ],
+    "quotas": 3,
+    "merchant": "Prueba",
+    "date": "2026-10-06",
+    "note": "conservar"
+  },
+  "unchanged": true,
+  "method": "action simulation with injected draft/composer, no DOM/browser"
+}

@@ -1,0 +1,511 @@
+Comparación local contra snapshot previo; no hay Git.
+--- base/lib/core/notifications/payment_reminder_bridge.dart
++++ lib/core/notifications/payment_reminder_bridge.dart
+@@ -0,0 +1,47 @@
++import 'package:flutter/services.dart';
++
++final class PaymentReminderRequest {
++  const PaymentReminderRequest({
++    required this.id,
++    required this.obligationId,
++    required this.title,
++    required this.body,
++    required this.localDateTime,
++  });
++  final String id, obligationId, title, body;
++  final DateTime localDateTime;
++  Map<String, Object> toMap() {
++    if (id.isEmpty || obligationId.isEmpty || localDateTime.isUtc) {
++      throw ArgumentError('El recordatorio requiere identidad y hora local.');
++    }
++    return {
++      'id': id,
++      'obligationId': obligationId,
++      'title': title,
++      'body': body,
++      'localDateTime': localDateTime.toIso8601String(),
++    };
++  }
++}
++
++final class PaymentReminderBridge {
++  const PaymentReminderBridge({
++    this.channel = const MethodChannel(
++      'finanzas_locales/payment_reminders',
++    ),
++  });
++  final MethodChannel channel;
++  Future<bool> permission() async =>
++      await channel.invokeMethod<bool>('permission') ?? false;
++  Future<bool> requestPermission() async =>
++      await channel.invokeMethod<bool>('requestPermission') ?? false;
++
++  /// Replaces the entire agenda, including while permission is denied.
++  Future<bool> reconcile(List<PaymentReminderRequest> requests) async =>
++      await channel.invokeMethod<bool>('replaceSchedule', {
++        'requests': requests.map((r) => r.toMap()).toList(),
++      }) ??
++      false;
++  Future<String?> consumeOpenAction() =>
++      channel.invokeMethod<String>('consumeOpenAction');
++}
+--- base/lib/core/notifications/payment_reminder_scheduler.dart
++++ lib/core/notifications/payment_reminder_scheduler.dart
+@@ -0,0 +1,63 @@
++import 'payment_reminder_bridge.dart';
++
++final class PaymentReminderInput {
++  const PaymentReminderInput({
++    required this.id,
++    required this.title,
++    required this.dueDate,
++    this.enabled = true,
++    this.onDueDate = true,
++    this.daysBefore = 3,
++    this.hour = 9,
++    this.minute = 0,
++  });
++  final String id, title;
++  final DateTime dueDate;
++  final bool enabled, onDueDate;
++  final int daysBefore, hour, minute;
++}
++
++final class PaymentReminderScheduler {
++  const PaymentReminderScheduler();
++  List<PaymentReminderRequest> schedule(
++    Iterable<PaymentReminderInput> inputs, {
++    required DateTime now,
++  }) {
++    final result = <PaymentReminderRequest>[];
++    final seen = <String>{};
++    for (final input in inputs) {
++      if (input.daysBefore < 0 ||
++          input.daysBefore > 60 ||
++          input.hour < 0 ||
++          input.hour > 23 ||
++          input.minute < 0 ||
++          input.minute > 59 ||
++          input.id.isEmpty ||
++          !seen.add(input.id)) {
++        throw ArgumentError('Configuración de recordatorio inválida.');
++      }
++      if (!input.enabled) continue;
++      for (final offset in {input.daysBefore, if (input.onDueDate) 0}) {
++        final date = DateTime(
++          input.dueDate.year,
++          input.dueDate.month,
++          input.dueDate.day - offset,
++          input.hour,
++          input.minute,
++        );
++        if (!date.isAfter(now)) continue;
++        result.add(
++          PaymentReminderRequest(
++            id: '${input.id}:${date.toIso8601String()}',
++            obligationId: input.id,
++            title: input.title,
++            body: 'Revisar pago',
++            localDateTime: date,
++          ),
++        );
++      }
++    }
++    result.sort((a, b) => a.localDateTime.compareTo(b.localDateTime));
++    return result;
++  }
++}
+--- base/android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales/PaymentReminderReceiver.kt
++++ android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales/PaymentReminderReceiver.kt
+@@ -0,0 +1,154 @@
++package py.finanzaslocales.finanzas_locales
++
++import android.app.AlarmManager
++import android.app.NotificationChannel
++import android.app.NotificationManager
++import android.app.PendingIntent
++import android.content.BroadcastReceiver
++import android.content.Context
++import android.content.Intent
++import android.net.Uri
++import android.os.Build
++import androidx.core.app.NotificationCompat
++import androidx.core.app.NotificationManagerCompat
++import org.json.JSONArray
++import org.json.JSONObject
++import java.text.SimpleDateFormat
++import java.util.Locale
++import java.util.TimeZone
++import java.util.UUID
++
++/** No ledger access: this receiver can only display a previously reconciled reminder. */
++class PaymentReminderReceiver : BroadcastReceiver() {
++    override fun onReceive(context: Context, intent: Intent) {
++        try {
++            if (intent.action == PaymentReminderAgenda.ALARM) {
++                PaymentReminderAgenda.deliver(context, intent.getStringExtra("generation"), intent.getStringExtra("id"))
++            } else {
++                PaymentReminderAgenda.rebuild(context)
++            }
++        } catch (_: Exception) {
++            // Fail closed if encrypted storage/Keystore is unavailable; next foreground reconcile retries.
++        }
++    }
++}
++
++internal object PaymentReminderAgenda {
++    const val ALARM = "py.finanzaslocales.PAYMENT_REMINDER"
++    const val OPEN = "py.finanzaslocales.OPEN_PAYMENT"
++    const val CHANNEL = "payment_reminders_v1"
++    private fun preferences(c: Context) = c.getSharedPreferences("payment_reminders", Context.MODE_PRIVATE)
++    private fun read(c: Context): JSONObject {
++        val value = preferences(c).getString("encrypted", null) ?: return JSONObject().put("generation", "").put("requests", JSONArray()).put("delivered", JSONArray())
++        return JSONObject(DeviceCrypto.decrypt(value))
++    }
++    private fun write(c: Context, state: JSONObject) {
++        check(preferences(c).edit().putString("encrypted", DeviceCrypto.encrypt(state.toString())).commit())
++    }
++    private fun manager(c: Context) = c.getSystemService(NotificationManager::class.java)
++    private fun channel(c: Context) {
++        if (Build.VERSION.SDK_INT >= 26) manager(c).createNotificationChannel(NotificationChannel(CHANNEL, "Pagos pendientes", NotificationManager.IMPORTANCE_DEFAULT))
++    }
++    fun permission(c: Context): Boolean {
++        channel(c)
++        return NotificationManagerCompat.from(c).areNotificationsEnabled() &&
++            (Build.VERSION.SDK_INT < 26 || manager(c).getNotificationChannel(CHANNEL).importance != NotificationManager.IMPORTANCE_NONE)
++    }
++    private fun entries(state: JSONObject): List<JSONObject> {
++        val array = state.getJSONArray("requests")
++        return (0 until array.length()).map { array.getJSONObject(it) }
++    }
++    private fun delivered(state: JSONObject): Set<String> {
++        val array = state.getJSONArray("delivered")
++        return (0 until array.length()).map { array.getString(it) }.toSet()
++    }
++    private fun millis(r: JSONObject): Long {
++        val text = r.getString("localDateTime")
++        require(text.matches(Regex("[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}")))
++        val format = SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US).apply {
++            isLenient = false
++            timeZone = TimeZone.getDefault()
++        }
++        return requireNotNull(format.parse(text)).time
++    }
++    private fun alarm(c: Context, generation: String, id: String): PendingIntent = PendingIntent.getBroadcast(c, 0,
++        Intent(c, PaymentReminderReceiver::class.java).setAction(ALARM)
++            .setData(Uri.parse("cabal-reminder://alarm/${Uri.encode(generation)}/${Uri.encode(id)}"))
++            .putExtra("generation", generation).putExtra("id", id), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
++
++    @Synchronized fun replace(c: Context, requests: List<Map<String, Any?>>): Boolean {
++        val unique = mutableSetOf<String>()
++        val array = JSONArray()
++        requests.forEach { value ->
++            val r = JSONObject(value)
++            val id = r.getString("id")
++            require(id.isNotBlank() && id.length <= 512 && unique.add(id))
++            require(r.getString("obligationId").isNotBlank() && r.getString("obligationId").length <= 160)
++            require(r.getString("title").length <= 240 && r.getString("body").length <= 500)
++            millis(r) // Validate all requests before replacing the valid agenda.
++            array.put(r)
++        }
++        require(requests.size <= 20000)
++        val old = read(c)
++        val state = JSONObject().put("generation", UUID.randomUUID().toString())
++            .put("requests", array).put("delivered", old.getJSONArray("delivered"))
++        // Persist new generation first: an old queued broadcast is immediately invalid.
++        write(c, state)
++        entries(old).forEach { r ->
++            c.getSystemService(AlarmManager::class.java).cancel(alarm(c, old.getString("generation"), r.getString("id")))
++            manager(c).cancel("payment:${r.getString("id")}", 0)
++        }
++        schedule(c, state)
++        return permission(c)
++    }
++    private fun schedule(c: Context, state: JSONObject) {
++        val done = delivered(state)
++        if (!permission(c)) return
++        // Bound outstanding alarms below Android's per-app limit. Each delivery fills the window.
++        entries(state).filter { it.getString("id") !in done && millis(it) > System.currentTimeMillis() }
++            .sortedBy { millis(it) }.take(400).forEach { r ->
++            c.getSystemService(AlarmManager::class.java).setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, millis(r), alarm(c, state.getString("generation"), r.getString("id")))
++        }
++    }
++    @Synchronized fun rebuild(c: Context) {
++        val state = read(c)
++        entries(state).forEach { r -> c.getSystemService(AlarmManager::class.java).cancel(alarm(c, state.getString("generation"), r.getString("id"))) }
++        schedule(c, state)
++    }
++    @Synchronized fun deliver(c: Context, generation: String?, id: String?) {
++        val state = read(c)
++        if (generation != state.getString("generation") || id == null || id in delivered(state)) return
++        if (entries(state).none { it.getString("id") == id } || !permission(c)) return
++        val done = delivered(state)
++        entries(state).filter { it.getString("id") !in done && millis(it) <= System.currentTimeMillis() }.forEach { r ->
++            notifyOne(c, state, generation, r)
++        }
++        schedule(c, state)
++    }
++    private fun notifyOne(c: Context, state: JSONObject, generation: String?, r: JSONObject) {
++        val id = r.getString("id")
++        val contentIntent = Intent(c, MainActivity::class.java).setAction(OPEN)
++            .setData(Uri.parse("cabal-reminder://open/${Uri.encode(generation)}/${Uri.encode(id)}"))
++            .putExtra("reminderGeneration", generation).putExtra("reminderId", id)
++            .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
++        val pending = PendingIntent.getActivity(c, 0, contentIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
++        val notification = NotificationCompat.Builder(c, CHANNEL)
++            .setSmallIcon(android.R.drawable.ic_popup_reminder).setContentTitle(r.getString("title"))
++            .setContentText(r.getString("body")).setContentIntent(pending).setAutoCancel(true)
++            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()
++        // Persist before notify: process death cannot produce a second delivery.
++        state.getJSONArray("delivered").put(id)
++        write(c, state)
++        try { manager(c).notify("payment:$id", 0, notification) } catch (_: SecurityException) { /* revoked concurrently */ }
++    }
++    @Synchronized fun consume(c: Context, intent: Intent?): String? {
++        if (intent?.action != OPEN) return null
++        val state = read(c)
++        val generation = intent.getStringExtra("reminderGeneration")
++        val id = intent.getStringExtra("reminderId")
++        intent.removeExtra("reminderGeneration")
++        intent.removeExtra("reminderId")
++        if (generation != state.getString("generation")) return null
++        return entries(state).firstOrNull { it.getString("id") == id }?.getString("obligationId")
++    }
++}
+--- base/android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales/MainActivity.kt
++++ android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales/MainActivity.kt
+@@ -43,20 +43,37 @@
+                     } else Thread {
+                         try {
+                             val derived = DeviceCrypto.deriveBackupKey(password, salt)
+                             runOnUiThread { result.success(derived) }
+                         } catch (_: Exception) {
+                             runOnUiThread { result.error("backup_key_failed", "No se pudo descifrar el backup.", null) }
+                         }
+                     }.start()
+                 }
+                 else -> result.notImplemented()
++            }
++        }
++        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "finanzas_locales/payment_reminders").setMethodCallHandler { call, result ->
++            try {
++                when (call.method) {
++                    "permission" -> result.success(PaymentReminderAgenda.permission(this))
++                    "requestPermission" -> requestOwnNotificationPermission(object : MethodChannel.Result {
++                        override fun success(value: Any?) { result.success(PaymentReminderAgenda.permission(this@MainActivity)) }
++                        override fun error(code: String, message: String?, details: Any?) { result.error(code, message, details) }
++                        override fun notImplemented() { result.notImplemented() }
++                    })
++                    "replaceSchedule" -> result.success(PaymentReminderAgenda.replace(this, call.argument<List<Map<String, Any?>>>("requests") ?: emptyList()))
++                    "consumeOpenAction" -> result.success(PaymentReminderAgenda.consume(this, intent))
++                    else -> result.notImplemented()
++                }
++            } catch (_: Exception) {
++                result.error("reminder_schedule_failed", "No se pudieron actualizar los recordatorios.", null)
+             }
+         }
+         val captureChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
+         NotificationQueue.onCaptured = { captureChannel.invokeMethod("notificationCaptured", null) }
+         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName).setMethodCallHandler { call, result ->
+             val preferences = getSharedPreferences(NotificationQueue.preferencesName, MODE_PRIVATE)
+             when (call.method) {
+                 "isAccessGranted" -> result.success(isNotificationAccessGranted())
+                 "openAccessSettings" -> {
+                     openNotificationAccessSettings()
+--- base/android/app/src/main/AndroidManifest.xml
++++ android/app/src/main/AndroidManifest.xml
+@@ -1,12 +1,13 @@
+ <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
++    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+ 
+     <application
+         android:label="@string/app_name"
+         android:name="${applicationName}"
+         android:allowBackup="false"
+         android:fullBackupContent="false"
+         android:usesCleartextTraffic="false"
+         android:icon="@mipmap/ic_launcher"
+         android:roundIcon="@mipmap/ic_launcher">
+@@ -38,20 +39,29 @@
+             android:exported="false">
+             <intent-filter>
+                 <action android:name="android.service.notification.NotificationListenerService" />
+             </intent-filter>
+         </service>
+ 
+         <receiver
+             android:name=".NotificationActionReceiver"
+             android:exported="false" />
+ 
++        <receiver android:name=".PaymentReminderReceiver" android:exported="false">
++            <intent-filter>
++                <action android:name="android.intent.action.BOOT_COMPLETED" />
++                <action android:name="android.intent.action.TIME_SET" />
++                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
++                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
++            </intent-filter>
++        </receiver>
++
+         <meta-data
+             android:name="flutterEmbedding"
+             android:value="2" />
+     </application>
+ 
+     <queries>
+         <intent>
+             <action android:name="android.intent.action.PROCESS_TEXT" />
+             <data android:mimeType="text/plain" />
+         </intent>
+--- base/test/core/notifications/payment_reminder_test.dart
++++ test/core/notifications/payment_reminder_test.dart
+@@ -0,0 +1,148 @@
++import 'package:flutter/services.dart';
++import 'package:flutter_test/flutter_test.dart';
++import 'package:finanzas_locales/core/notifications/payment_reminder_bridge.dart';
++import 'package:finanzas_locales/core/notifications/payment_reminder_scheduler.dart';
++
++void main() {
++  TestWidgetsFlutterBinding.ensureInitialized();
++  test(
++    'defaults plan local dates before and due, disabled and elapsed omitted',
++    () {
++      final result = const PaymentReminderScheduler().schedule([
++        PaymentReminderInput(
++          id: 'a',
++          title: 'Servicio',
++          dueDate: DateTime(2026, 11, 1),
++        ),
++        PaymentReminderInput(
++          id: 'b',
++          title: 'Otro',
++          dueDate: DateTime(2026, 11, 1),
++          enabled: false,
++        ),
++      ], now: DateTime(2026, 10, 1));
++      expect(result.map((r) => r.localDateTime), [
++        DateTime(2026, 10, 29, 9),
++        DateTime(2026, 11, 1, 9),
++      ]);
++      expect(result.map((r) => r.id).toSet().length, 2);
++      expect(
++        const PaymentReminderScheduler().schedule([
++          PaymentReminderInput(
++            id: 'a',
++            title: 'x',
++            dueDate: DateTime(2026, 1, 1),
++          ),
++        ], now: DateTime(2026, 10, 1)),
++        isEmpty,
++      );
++    },
++  );
++  test(
++    'due day toggle omits due notice while zero days remains one notice',
++    () {
++      final scheduler = const PaymentReminderScheduler();
++      final before = scheduler.schedule([
++        PaymentReminderInput(
++          id: 'a',
++          title: 'x',
++          dueDate: DateTime(2026, 11, 1),
++          onDueDate: false,
++        ),
++      ], now: DateTime(2026, 10, 1));
++      expect(before.single.localDateTime, DateTime(2026, 10, 29, 9));
++      expect(
++        scheduler.schedule([
++          PaymentReminderInput(
++            id: 'a',
++            title: 'x',
++            dueDate: DateTime(2026, 11, 1),
++            daysBefore: 0,
++            onDueDate: false,
++          ),
++        ], now: DateTime(2026, 10, 1)).length,
++        1,
++      );
++      expect(
++        () => scheduler.schedule([
++          PaymentReminderInput(
++            id: 'a',
++            title: 'x',
++            dueDate: DateTime(2026, 11, 1),
++            daysBefore: 61,
++          ),
++        ], now: DateTime(2026, 10, 1)),
++        throwsArgumentError,
++      );
++    },
++  );
++  test('custom zero days emits once and invalid configuration fails', () {
++    final scheduler = const PaymentReminderScheduler();
++    expect(
++      scheduler
++          .schedule([
++            PaymentReminderInput(
++              id: 'a',
++              title: 'x',
++              dueDate: DateTime(2026, 11, 1),
++              daysBefore: 0,
++              hour: 14,
++              minute: 30,
++            ),
++          ], now: DateTime(2026, 10, 1))
++          .single
++          .localDateTime,
++      DateTime(2026, 11, 1, 14, 30),
++    );
++    expect(
++      () => scheduler.schedule([
++        PaymentReminderInput(
++          id: 'a',
++          title: 'x',
++          dueDate: DateTime(2026, 11, 1),
++          hour: 24,
++        ),
++      ], now: DateTime(2026, 10, 1)),
++      throwsArgumentError,
++    );
++  });
++  test(
++    'bridge replaces even empty schedules and preserves local wall clock',
++    () async {
++      const channel = MethodChannel('test/reminders');
++      final calls = <MethodCall>[];
++      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
++          .setMockMethodCallHandler(channel, (call) async {
++            calls.add(call);
++            return call.method == 'consumeOpenAction' ? 'obligation' : false;
++          });
++      const bridge = PaymentReminderBridge(channel: channel);
++      expect(await bridge.permission(), false);
++      expect(await bridge.requestPermission(), false);
++      expect(
++        await bridge.reconcile([
++          PaymentReminderRequest(
++            id: 'r',
++            obligationId: 'o',
++            title: 't',
++            body: 'b',
++            localDateTime: DateTime(2026, 11, 1, 9),
++          ),
++        ]),
++        false,
++      );
++      expect((calls.last.arguments as Map)['requests'], [
++        {
++          'id': 'r',
++          'obligationId': 'o',
++          'title': 't',
++          'body': 'b',
++          'localDateTime': '2026-11-01T09:00:00.000',
++        },
++      ]);
++      await bridge.reconcile([]);
++      expect((calls.last.arguments as Map)['requests'], isEmpty);
++      expect(await bridge.consumeOpenAction(), 'obligation');
++    },
++  );
++}

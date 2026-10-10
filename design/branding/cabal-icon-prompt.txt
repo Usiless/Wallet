@@ -1,0 +1,10 @@
+Generated with the built-in image_gen tool.
+
+Use case: logo-brand
+Asset type: square Android app icon for Cabal, a personal finance app for accounts, expenses, savings and budgets.
+Primary request: Create one polished minimal brand icon: a bold, distinctive geometric capital C built from two balanced thick curved segments, subtly suggesting order and balance. The silhouette must clearly read as C, open to the right, with ample negative space, crisp edges and gently rounded terminals.
+Scene/backdrop: solid deep forest green #103D32 filling the entire square canvas edge to edge, no outer frame or pre-rounded app tile.
+Color palette: main symbol light mint #A7E8C2 with a small complementary jade #54B58A segment.
+Style/medium: flat vector-like graphic rendered as a high-quality raster image, restrained, contemporary, calm and trustworthy.
+Composition: one centered symbol taking about 58 percent of the square width, generous safe margins for Android launcher masking, optically balanced; 1024 by 1024 square.
+Constraints: output only the actual icon artwork; no brand word, no tagline, no tiny lettering, no currency signs, no coins, no wallet illustrations, no chart, no mockup, no grid of options, no 3D, no shadows, no gradients, no texture, no border, no watermark.

@@ -1,0 +1,5 @@
+R07 amount-only plan matrix {"cases":12,"allDatesPreserved":true}
+R07/R01/R06 recurring + carry {"anchor":"2026-10-31","next":"2027-01-31","carriedDue":"2026-12-31","carriedRemaining":150000}
+session snapshot restore model {"obligations":3,"pendingPreserved":true,"paidAndCarryPreserved":true,"revision":1}
+Wallet simulated gate + auto + unknown {"withoutPermission":0,"knownStatus":"registered","repeatedTransactions":1,"unknownStatus":"pending"}
+paid vs due month {"september":{"paid":0,"pending":0,"consumed":0,"remaining":200000},"october":{"paid":100000,"pending":0,"consumed":100000,"remaining":100000}}

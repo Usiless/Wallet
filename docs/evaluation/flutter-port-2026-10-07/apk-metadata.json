@@ -1,0 +1,15 @@
+{
+  "date": "2026-10-09",
+  "artifact": "build/app/outputs/flutter-apk/cabal-2026-10-09.apk",
+  "mode": "profile",
+  "bytes": 124622725,
+  "sha256": "10cb0b1f6f4108be2da884b6cddde49145090f0cf8838cb369c4ecc2ef4eb6a6",
+  "applicationId": "py.finanzaslocales.finanzas_locales",
+  "signerSha256": "1e0976b08275a2e9338aa392d67a4c76cd681aadf3e7808e94c0bfa4c43afd95",
+  "sameCertificateAsPreviousDebugApk": true,
+  "nativeDeveloperToolsEnabled": false,
+  "dartDefine": "ENABLE_DEVELOPER_TOOLS=false",
+  "flutterTests": 249,
+  "analyze": "No issues found",
+  "androidRuntimeVerified": false
+}

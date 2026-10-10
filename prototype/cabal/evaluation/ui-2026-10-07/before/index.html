@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#123f35">
+  <title>Cabal · Prototipo navegable</title>
+  <link rel="icon" href="icon.png">
+  <link rel="stylesheet" href="styles.css?v=pending-payments-1">
+</head>
+<body>
+  <aside class="studio" aria-label="Controles del prototipo">
+    <div class="studio-brand"><img class="brand-mark" src="icon.png" alt=""><div>Cabal<span>PROTOTIPO INTERACTIVO · 01</span></div></div>
+    <h1>Prototipo Cabal</h1>
+    <p>Datos ficticios. Los cambios solo afectan esta demostración.</p>
+    <label for="scenario">Escenario de demostración</label>
+    <select id="scenario">
+      <option value="daily">Uso diario</option><option value="first">Primera vez</option>
+      <option value="credit">Crédito y cuotas</option><option value="wallet">Pendientes Wallet</option>
+      <option value="payments">Cuotas y recordatorios</option><option value="scheduled">Programados</option><option value="analysis">Análisis</option>
+      <option value="files">Backup y recuperación</option><option value="developer">Desarrollo habilitado</option>
+    </select>
+    <button id="reset" class="studio-button">Reiniciar este escenario</button>
+    <div class="studio-guide"><span class="eyebrow">RECORRIDOS PARA PROBAR</span><ol><li>Registrá y dividí un gasto.</li><li>Revisá una compra de Wallet.</li><li>Pagá una tarjeta y mirá su deuda.</li><li>Confirmá una cuota o un pago parcial.</li><li>Probá los recordatorios editables.</li></ol></div>
+    <details><summary>Sobre esta versión</summary><p>Cinco pestañas, consulta mensual, Wallet opcional y backup conservado. CSV y JSON se retiraron del alcance. Diseño actualizado para revisión.</p><p>Permisos, bloqueo, notificaciones y backups son simulaciones. Sin conexión a Flutter ni a datos personales.</p><p>Referencia: docs/IMPLEMENTATION_PLAN.md, en el proyecto.</p></details>
+    <div class="studio-footer"><span class="status-dot"></span> Local · Sin servicios externos</div>
+  </aside>
+  <main class="device" aria-label="Cabal"><div class="demo-strip">DATOS FICTICIOS <span>6 OCT 2026</span></div><div id="app"></div></main>
+  <div id="overlay"></div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="model.js?v=pending-payments-1"></script>
+  <script src="app.js?v=pending-payments-1"></script>
+</body>
+</html>

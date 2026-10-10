@@ -1,0 +1,4 @@
+fecha;tipo;importe;moneda;cuenta_origen;cuenta_destino;categoria;subcategoria;comercio;canal;nota;referencia
+2026-07-06;ingreso;3688653;PYG;;Sudameris principal;Ingresos;Salario;;;Salario julio;salario-2026-07
+2026-07-06;transferencia;219000;PYG;Sudameris principal;Tarjeta de crédito Sudameris;;;;transferencia_bancaria;Pago de tarjeta;pago-tc-2026-07-06
+2026-07-07;gasto;75000;PYG;Tarjeta de crédito Sudameris;;Alimentación;;Supermercado X;google_wallet;;compra-001

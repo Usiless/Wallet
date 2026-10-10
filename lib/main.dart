@@ -1,0 +1,31 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:timezone/data/latest.dart' as tz;
+
+import 'app/app.dart';
+import 'app/providers.dart';
+import 'core/database/app_database.dart';
+import 'core/backup/backup_service.dart';
+import 'core/settings/settings_repository.dart';
+import 'features/accounts/data/accounts_service.dart';
+import 'features/onboarding/data/onboarding_service.dart';
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  tz.initializeTimeZones();
+  await cleanupBackupWorkingFiles();
+  final database = AppDatabase();
+  final settings = SettingsRepository(database);
+  final onboarding = OnboardingService(
+    database,
+    AccountsService(database),
+    settings,
+  );
+  await onboarding.ensureSystemData();
+  runApp(
+    ProviderScope(
+      overrides: [databaseProvider.overrideWithValue(database)],
+      child: const FinanzasApp(),
+    ),
+  );
+}
