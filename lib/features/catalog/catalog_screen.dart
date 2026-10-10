@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
+import '../../shared/widgets/app_fab.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
@@ -159,8 +160,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
           ),
         ],
       ),
-      floatingActionButton: FloatingActionButton(
-        heroTag: null,
+      floatingActionButton: AppFab(
         onPressed: _add,
         tooltip: 'Agregar',
         child: const Icon(Icons.add),

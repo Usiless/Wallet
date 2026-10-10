@@ -6,6 +6,7 @@ import '../../app/providers.dart';
 import '../../shared/widgets/async_value_view.dart';
 import 'manual_template_service.dart';
 import 'template_summary.dart';
+import '../../shared/widgets/app_fab.dart';
 
 final class TemplatesScreen extends ConsumerStatefulWidget {
   const TemplatesScreen({this.scheduledOnly = false, super.key});
@@ -125,8 +126,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
               );
       },
     ),
-    floatingActionButton: FloatingActionButton.extended(
-      heroTag: null,
+    floatingActionButton: AppFab.extended(
       icon: const Icon(Icons.add),
       label: const Text('Crear plantilla'),
       onPressed: () => context.push('/transactions/new?editTemplate=true'),

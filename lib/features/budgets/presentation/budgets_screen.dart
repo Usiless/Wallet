@@ -10,6 +10,7 @@ import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../../shared/widgets/money_text.dart';
 import '../domain/budget_service.dart';
+import '../../../shared/widgets/app_fab.dart';
 
 final class BudgetsScreen extends ConsumerStatefulWidget {
   const BudgetsScreen({this.navigation, super.key});
@@ -48,8 +49,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
     final service = ref.watch(budgetServiceProvider),
         loc = MaterialLocalizations.of(context);
     return Scaffold(
-      floatingActionButton: FloatingActionButton(
-        heroTag: null,
+      floatingActionButton: AppFab(
         tooltip: 'Crear presupuesto',
         onPressed: _create,
         child: const Icon(Icons.add),

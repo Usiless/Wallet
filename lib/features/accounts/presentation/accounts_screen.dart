@@ -13,6 +13,7 @@ import 'create_account_dialog.dart';
 import '../../transactions/presentation/ledger_actions.dart';
 import '../../transactions/presentation/transactions_screen.dart';
 import '../../credit_cards/domain/credit_card_cycle.dart';
+import '../../../shared/widgets/app_fab.dart';
 
 final class AccountsScreen extends ConsumerStatefulWidget {
   const AccountsScreen({this.accountId, super.key});
@@ -165,8 +166,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         },
       ),
       floatingActionButton: widget.accountId == null
-          ? FloatingActionButton(
-              heroTag: null,
+          ? AppFab(
               tooltip: 'Agregar cuenta',
               onPressed: () => _showCreate(context, ref),
               child: const Icon(Icons.add),

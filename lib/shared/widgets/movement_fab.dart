@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
+import 'app_fab.dart';
+
 /// One entry point, shared by home and history. The menu never writes data.
 class MovementFab extends StatefulWidget {
   const MovementFab({super.key});
@@ -66,8 +68,7 @@ class _MovementFabState extends State<MovementFab> {
                         ])
                           Padding(
                             padding: const EdgeInsets.only(bottom: 12),
-                            child: FloatingActionButton.extended(
-                              heroTag: null,
+                            child: AppFab.extended(
                               onPressed: () {
                                 _close(returnFocus: false);
                                 context.push(
@@ -82,9 +83,8 @@ class _MovementFabState extends State<MovementFab> {
                     ),
                   ),
                 ),
-              FloatingActionButton(
+              AppFab(
                 focusNode: _triggerFocus,
-                heroTag: null,
                 tooltip: _open ? 'Cerrar acciones' : 'Nuevo movimiento',
                 onPressed: () {
                   setState(() => _open = !_open);
