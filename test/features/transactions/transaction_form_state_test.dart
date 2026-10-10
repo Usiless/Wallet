@@ -5,6 +5,7 @@ import 'package:finanzas_locales/core/money/money.dart';
 import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
 import 'package:finanzas_locales/features/payments/domain/pending_payment_models.dart';
 import 'package:finanzas_locales/features/templates/manual_template_service.dart';
+import 'package:finanzas_locales/features/installments/domain/installment_service.dart';
 import 'package:finanzas_locales/features/templates/save_template_dialog.dart';
 import 'package:finanzas_locales/features/transactions/data/category_service.dart';
 import 'package:finanzas_locales/features/transactions/data/ledger_repository.dart';
@@ -633,6 +634,78 @@ void main() {
       expect(values.installmentCount, 3);
       expect(values.bookGeneration, 4);
       expect(values.editId, isNull);
+    });
+  });
+  group('plan de cuotas y valores iniciales de la plantilla', () {
+    test(
+      'editar una compra en cuotas conserva la cantidad y la primera cuota',
+      () async {
+        final id = await LedgerService(db).create(
+          TransactionDraft(
+            type: TransactionType.expense,
+            amount: const Money(90000),
+            occurredAt: DateTime(2026, 9, 10),
+            fromAccountId: card,
+          ),
+        );
+        await InstallmentService(db).attachPlan(
+          transactionId: id,
+          count: 3,
+          firstPeriod: DateTime(2026, 10, 15),
+        );
+        final source = await LedgerRepository(db).loadForForm(id);
+
+        final edited = blank(isEdit: true).withMovement(source);
+        expect(edited.installments, isTrue);
+        expect(edited.installmentCount, 3);
+        expect(edited.firstInstallmentDate, DateTime.utc(2026, 10, 15, 12));
+
+        final cloned = blank().withMovement(source);
+        expect(cloned.installments, isTrue);
+        expect(cloned.firstInstallmentDate, isNull);
+      },
+    );
+
+    test('una plantilla con recordatorios los conserva', () async {
+      final service = ManualTemplateService(db);
+      final id = await service.save('Con aviso', {
+        'type': 'expense',
+        'from': bank,
+        'reminders': const PaymentReminderSettings(
+          enabled: false,
+          daysBefore: 7,
+        ).toJson(),
+      });
+
+      final state = blank().withTemplate(
+        (await service.read(id))!,
+        null,
+        markClean: false,
+      );
+
+      expect(state.reminders.enabled, isFalse);
+      expect(state.reminders.daysBefore, 7);
+    });
+
+    test('al registrar, cambiar la frecuencia propone otra próxima fecha', () {
+      final defaults = blank().templateDefaults(afterRegistration: true);
+      expect(defaults.frequency, 'monthly');
+      expect(defaults.nextDate, DateTime(2026, 11, 5));
+
+      final yearly = defaults.nextDateForFrequency!('yearly');
+      expect(yearly, DateTime(2027, 10, 5));
+      expect(
+        blank().templateDefaults(afterRegistration: false).nextDateForFrequency,
+        isNull,
+      );
+      expect(
+        blank()
+            .copyWith(templateSchedule: {'frequency': 'monthly'})
+            .templateDefaults(afterRegistration: true)
+            .nextDateForFrequency,
+        isNull,
+        reason: 'una plantilla ya programada no recalcula la fecha',
+      );
     });
   });
 }

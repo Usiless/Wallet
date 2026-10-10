@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,17 +6,17 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/money/money.dart';
-import '../data/transaction_form_service.dart';
 import '../../../core/money/pyg_input_formatter.dart';
-import '../domain/ledger_models.dart';
-import '../../payments/domain/pending_payment_models.dart';
-import '../../payments/presentation/payment_reminder_fields.dart';
-import '../domain/payment_channel_policy.dart';
+import '../../../shared/widgets/text_prompt_dialog.dart';
 import '../../merchants/merchant_autocomplete.dart';
+import '../../payments/presentation/payment_reminder_fields.dart';
 import '../../templates/save_template_dialog.dart';
 import '../../templates/template_picker_sheet.dart';
-import '../../templates/scheduled_template_service.dart';
-import '../../../shared/widgets/text_prompt_dialog.dart';
+import '../data/transaction_form_service.dart';
+import '../domain/ledger_models.dart';
+import '../domain/payment_channel_policy.dart';
+import 'transaction_form_notifier.dart';
+import 'transaction_form_state.dart';
 
 final class TransactionFormScreen extends ConsumerStatefulWidget {
   const TransactionFormScreen({
@@ -40,41 +38,68 @@ final class TransactionFormScreen extends ConsumerStatefulWidget {
   final String? savedTemplateId;
   final bool editTemplate;
 
+  TransactionFormArgs get args => (
+    initialType: initialType,
+    template: template,
+    cloneId: cloneId,
+    editId: editId,
+    toAccountId: toAccountId,
+    savedTemplateId: savedTemplateId,
+    editTemplate: editTemplate,
+  );
+
   @override
   ConsumerState<TransactionFormScreen> createState() =>
       _TransactionFormScreenState();
 }
 
+/// Vista del formulario: dibuja el estado del ViewModel y le reenvía lo que
+/// el usuario hace. Lo que depende del contexto (diálogos, selectores de
+/// fecha, permiso de avisos, navegación) se resuelve aquí.
 class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
   final _formKey = GlobalKey<FormState>();
-  String? _baseline;
+  final _amount = TextEditingController();
+  final _merchant = TextEditingController();
+  final _note = TextEditingController();
   bool _confirmingExit = false;
-  String get _draftSnapshot => jsonEncode([
-    _type.name,
-    _amount.text,
-    _merchant.text,
-    _note.text,
-    _from,
-    _to,
-    _category,
-    _occurredAt.toIso8601String(),
-    _channel.name,
-    _payLater,
-    _repeat,
-    _installments,
-    _installmentCount,
-    _reminders.toJson(),
-    _firstInstallmentDate?.toIso8601String(),
-    _splitEnabled,
-    [
-      for (final split in _splits) [split.categoryId, split.amount.text],
-    ],
-    _alsoSaveTemplate,
-    _templateName,
-    _templateSchedule,
-  ]);
+
+  late final TransactionFormArgs _args = widget.args;
+  TransactionFormState get _state => ref.read(transactionFormProvider(_args));
+  TransactionFormNotifier get _vm =>
+      ref.read(transactionFormProvider(_args).notifier);
+
+  @override
+  void initState() {
+    super.initState();
+    _amount.addListener(() => _vm.setAmountText(_amount.text));
+    _merchant.addListener(() => _vm.setMerchantText(_merchant.text));
+    _note.addListener(() => _vm.setNoteText(_note.text));
+    ref.listenManual(
+      transactionFormProvider(_args).select((state) => state.textRevision),
+      (_, _) => _copyTextsFromState(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _merchant.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  /// El estado cambió los textos por su cuenta (carga o limpieza).
+  void _copyTextsFromState() {
+    final state = _state;
+    if (_amount.text != state.amountText) _amount.text = state.amountText;
+    if (_merchant.text != state.merchantText) {
+      _merchant.text = state.merchantText;
+    }
+    if (_note.text != state.noteText) _note.text = state.noteText;
+  }
+
   Future<void> _tryExit(bool didPop, Object? result) async {
-    if (didPop || _confirmingExit || _saving) return;
+    if (didPop || _confirmingExit || _state.saving) return;
     _confirmingExit = true;
     final discard = await showDialog<bool>(
       context: context,
@@ -94,71 +119,14 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     );
     _confirmingExit = false;
     if (discard != true || !mounted) return;
-    setState(() => _baseline = _draftSnapshot);
+    _vm.markClean();
     await WidgetsBinding.instance.endOfFrame;
     if (mounted) context.pop();
   }
 
-  final _amount = TextEditingController();
-  final _merchant = TextEditingController();
-  final _note = TextEditingController();
-  late TransactionType _type;
-  String? _from;
-  String? _to;
-  String? _category;
-  MerchantRecord? _selectedMerchant;
-  String? _awaitingCategory;
-  DateTime _occurredAt = DateTime.now();
-  PaymentChannel _channel = PaymentChannel.other;
-  var _advanced = false;
-  var _saveAnother = false;
-  var _alsoSaveTemplate = false;
-  var _payLater = false;
-  String? _repeat;
-  var _installments = false;
-  var _installmentCount = 2;
-  PaymentReminderSettings _reminders = const PaymentReminderSettings();
-  DateTime? _firstInstallmentDate;
-  late final int _bookGeneration;
-  var _saving = false;
-  var _templateApplied = false;
-  var _loadingTemplate = false;
-  String? _templateError;
-  DateTime? _editingUpdatedAt;
-  List<AccountRecord> _editingAccounts = [];
-  List<CategoryRecord> _editingCategories = [];
-  String? _originalMerchantId;
-  String _templateName = '';
-  Map<String, dynamic>? _templateSchedule;
-  var _splitEnabled = false;
-  final List<_SplitInput> _splits = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _bookGeneration = ref.read(transactionFormServiceProvider).bookGeneration;
-    _type = widget.initialType;
-    _to = widget.toAccountId;
-    if (widget.editId != null) _loadClone(widget.editId!);
-    if (widget.cloneId != null) _loadClone(widget.cloneId!);
-    if (widget.savedTemplateId != null) {
-      _loadSavedTemplate(widget.savedTemplateId!);
-    }
-  }
-
-  @override
-  void dispose() {
-    _amount.dispose();
-    _merchant.dispose();
-    _note.dispose();
-    for (final split in _splits) {
-      split.dispose();
-    }
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
+    final state = ref.watch(transactionFormProvider(_args));
     final accountsAsync = ref.watch(accountsProvider);
     final categoriesAsync = ref.watch(categoriesProvider);
     return Scaffold(
@@ -174,9 +142,9 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
           if (!widget.editTemplate && widget.editId == null)
             IconButton(
               tooltip: 'Usar plantilla',
-              onPressed: _saving ? null : _useTemplate,
+              onPressed: state.saving ? null : _useTemplate,
               icon: Icon(
-                _alsoSaveTemplate
+                state.alsoSaveTemplate
                     ? Icons.bookmark_added
                     : Icons.bookmarks_outlined,
               ),
@@ -187,476 +155,133 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
         loading: () => const Center(child: CircularProgressIndicator()),
         error: (error, _) => Center(child: Text('$error')),
         data: (activeAccounts) {
-          final accounts = [
-            ...activeAccounts,
-            if (widget.editId != null)
-              ..._editingAccounts.where(
-                (a) => !activeAccounts.any((r) => r.id == a.id),
-              ),
-          ];
-          if (_loadingTemplate) {
+          if (state.loading) {
             return const Center(child: CircularProgressIndicator());
           }
-          if (_templateError != null) {
-            return Center(child: Text(_templateError!));
+          if (state.loadError != null) {
+            return Center(child: Text(state.loadError!));
           }
-          if (!_templateApplied && widget.template != null) {
-            _templateApplied = true;
-            WidgetsBinding.instance.addPostFrameCallback(
-              (_) => _applyTemplate(widget.template!, accounts),
-            );
-          }
-          final activeCategories =
-              categoriesAsync.value ?? const <CategoryRecord>[];
-          final categories = [
-            ...activeCategories,
-            if (widget.editId != null)
-              ..._editingCategories.where(
-                (c) => !activeCategories.any((r) => r.id == c.id),
-              ),
-          ];
-          final availableCategories = categories
-              .where(_categoryMatchesType)
+          final accounts = state.accountsFrom(activeAccounts);
+          final categories = state.categoriesFrom(
+            categoriesAsync.value ?? const <CategoryRecord>[],
+          );
+          final available = categories
+              .where(state.categoryMatchesType)
               .toList();
-          if (availableCategories.any((row) => row.id == _awaitingCategory)) {
-            _awaitingCategory = null;
-          }
-          if (!categoriesAsync.isLoading &&
-              _category != _awaitingCategory &&
-              !availableCategories.any((row) => row.id == _category)) {
-            _category = null;
-          }
-          for (final split in _splits) {
-            if (!categoriesAsync.isLoading &&
-                !availableCategories.any((row) => row.id == split.categoryId)) {
-              split.categoryId = null;
-            }
-          }
-          if (!accounts.any((row) => row.id == _from)) _from = null;
-          if (!accounts.any((row) => row.id == _to) ||
-              (_type == TransactionType.transfer && _from == _to)) {
-            _to = null;
+          AccountType? typeOf(String? id) {
+            final account = accounts.where((a) => a.id == id).firstOrNull;
+            return account == null
+                ? null
+                : AccountType.values.byName(account.type);
           }
 
           final channels = PaymentChannelPolicy.allowed(
-            _type,
-            from: accounts.where((a) => a.id == _from).firstOrNull == null
-                ? null
-                : AccountType.values.byName(
-                    accounts.firstWhere((a) => a.id == _from).type,
-                  ),
-            to: accounts.where((a) => a.id == _to).firstOrNull == null
-                ? null
-                : AccountType.values.byName(
-                    accounts.firstWhere((a) => a.id == _to).type,
-                  ),
+            state.type,
+            from: typeOf(state.from),
+            to: typeOf(state.to),
           );
-          _channel = PaymentChannelPolicy.canonical(_channel);
-          if (!channels.contains(_channel)) _channel = channels.first;
-          _baseline ??= _draftSnapshot;
           return Form(
             key: _formKey,
-            canPop: !_saving && _baseline == _draftSnapshot,
+            canPop: !state.saving && !state.isDirty,
             onPopInvokedWithResult: _tryExit,
-            onChanged: () {
-              if (mounted) setState(() {});
-            },
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               children: [
-                TextFormField(
-                  controller: _amount,
-                  inputFormatters: [PygInputFormatter()],
-                  autofocus: widget.cloneId == null,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.next,
-                  style: Theme.of(context).textTheme.headlineMedium,
-                  decoration: const InputDecoration(
-                    prefixText: 'PYG ',
-                    labelText: 'Importe',
-                  ),
-                  validator: (value) {
-                    try {
-                      if (Money.parse(value ?? '').minorUnits <= 0) {
-                        return 'Debe ser mayor que cero';
-                      }
-                    } catch (_) {
-                      return 'Ingresá un importe válido';
-                    }
-                    return null;
-                  },
-                ),
+                _amountField(context),
                 const SizedBox(height: 16),
-                if (MediaQuery.sizeOf(context).width < 420 &&
-                    MediaQuery.textScalerOf(context).scale(14) > 20)
-                  DropdownButtonFormField<TransactionType>(
-                    initialValue: _type,
-                    isExpanded: true,
-                    decoration: const InputDecoration(labelText: 'Tipo'),
-                    items: const [
-                      DropdownMenuItem(
-                        value: TransactionType.expense,
-                        child: Text('Gasto'),
-                      ),
-                      DropdownMenuItem(
-                        value: TransactionType.income,
-                        child: Text('Ingreso'),
-                      ),
-                      DropdownMenuItem(
-                        value: TransactionType.transfer,
-                        child: Text('Transferir'),
-                      ),
-                    ],
-                    onChanged: widget.editId != null
-                        ? null
-                        : (value) => setState(() => _type = value ?? _type),
-                  )
-                else
-                  SegmentedButton<TransactionType>(
-                    segments: const [
-                      ButtonSegment(
-                        value: TransactionType.expense,
-                        label: Text('Gasto'),
-                        icon: Icon(Icons.south_west),
-                      ),
-                      ButtonSegment(
-                        value: TransactionType.income,
-                        label: Text('Ingreso'),
-                        icon: Icon(Icons.north_east),
-                      ),
-                      ButtonSegment(
-                        value: TransactionType.transfer,
-                        label: Text('Transferir'),
-                        icon: Icon(Icons.swap_horiz),
-                      ),
-                    ],
-                    selected: {_type},
-                    onSelectionChanged: widget.editId != null
-                        ? null
-                        : (value) => setState(() {
-                            _type = value.first;
-                          }),
-                  ),
+                _typeSelector(state),
                 const SizedBox(height: 16),
-                if (_needsFrom)
+                if (state.needsFrom)
                   _AccountField(
                     label: 'Cuenta de origen',
-                    value: _from,
+                    value: state.from,
                     accounts: accounts,
-                    onChanged: (value) => setState(() {
-                      _from = value;
-                      final credit =
-                          accounts
-                              .where((account) => account.id == value)
-                              .firstOrNull
-                              ?.type ==
-                          AccountType.creditCard.name;
-                      if (credit) {
-                        _payLater = false;
-                        _repeat = null;
-                      } else if (!_payLater) {
-                        _installments = false;
-                      }
-                    }),
+                    onChanged: _vm.setFrom,
                   ),
-                if (_needsFrom && _needsTo) const SizedBox(height: 12),
-                if (_needsTo)
+                if (state.needsFrom && state.needsTo)
+                  const SizedBox(height: 12),
+                if (state.needsTo)
                   _AccountField(
                     label: 'Cuenta de destino',
-                    value: _to,
+                    value: state.to,
                     accounts: accounts,
-                    excludedId: _needsFrom ? _from : null,
-                    onChanged: (value) => setState(() => _to = value),
+                    excludedId: state.needsFrom ? state.from : null,
+                    onChanged: _vm.setTo,
                   ),
-                if (_type != TransactionType.transfer) ...[
+                if (state.type != TransactionType.transfer) ...[
                   const SizedBox(height: 12),
-                  if (!_splitEnabled)
+                  if (!state.splitEnabled)
                     _CategoryDropdown(
-                      identity: ('category', _type, _category),
-                      categories: availableCategories,
-                      value: _category,
+                      identity: ('category', state.type, state.category),
+                      categories: available,
+                      value: state.category,
                       onCreate: _createCategory,
-                      onChanged: (value) => setState(() => _category = value),
+                      onChanged: _vm.setCategory,
                     ),
                   TextButton.icon(
-                    onPressed: categories.isEmpty
-                        ? null
-                        : () => _toggleSplits(categories),
+                    onPressed: categories.isEmpty ? null : _vm.toggleSplits,
                     icon: const Icon(Icons.call_split),
                     label: Text(
-                      _splitEnabled
+                      state.splitEnabled
                           ? 'Usar una sola categoría'
                           : 'Dividir entre categorías',
                     ),
                   ),
-                  if (_splitEnabled) ...[
-                    for (var index = 0; index < _splits.length; index++)
-                      Padding(
-                        padding: const EdgeInsets.only(bottom: 8),
-                        child: Row(
-                          children: [
-                            Expanded(
-                              child: _CategoryDropdown(
-                                identity: (
-                                  _splits[index],
-                                  _type,
-                                  _splits[index].categoryId,
-                                ),
-                                categories: availableCategories,
-                                value: _splits[index].categoryId,
-                                expanded: true,
-                                onChanged: (value) =>
-                                    _splits[index].categoryId = value,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: TextFormField(
-                                controller: _splits[index].amount,
-                                inputFormatters: [PygInputFormatter()],
-                                keyboardType: TextInputType.number,
-                                decoration: const InputDecoration(
-                                  labelText: 'Importe',
-                                ),
-                              ),
-                            ),
-                            IconButton(
-                              tooltip: 'Quitar división',
-                              onPressed: _splits.length <= 2
-                                  ? null
-                                  : () => setState(
-                                      () => _splits.removeAt(index).dispose(),
-                                    ),
-                              icon: const Icon(Icons.remove_circle_outline),
-                            ),
-                          ],
-                        ),
+                  if (state.splitEnabled) ...[
+                    for (final split in state.splits)
+                      _SplitRow(
+                        key: ValueKey(split.id),
+                        split: split,
+                        type: state.type,
+                        categories: available,
+                        canRemove: state.splits.length > 2,
+                        onCategory: (value) =>
+                            _vm.setSplitCategory(split.id, value),
+                        onAmount: (text) => _vm.setSplitAmount(split.id, text),
+                        onRemove: () => _vm.removeSplit(split.id),
                       ),
                     TextButton.icon(
-                      onPressed: () =>
-                          setState(() => _splits.add(_SplitInput())),
+                      onPressed: _vm.addSplit,
                       icon: const Icon(Icons.add),
                       label: const Text('Otra categoría'),
                     ),
                   ],
                   const SizedBox(height: 4),
-                  if (_type == TransactionType.expense)
+                  if (state.type == TransactionType.expense)
                     MerchantAutocomplete(
                       label: 'Descripción',
                       controller: _merchant,
-                      onSelected: (merchant) async {
-                        _selectedMerchant = merchant;
-                        final previousCategory = _category;
-                        final category = await ref
-                            .read(merchantServiceProvider)
-                            .defaultCategory(merchant.id);
-                        if (mounted &&
-                            _type == TransactionType.expense &&
-                            _selectedMerchant?.id == merchant.id &&
-                            _merchant.text == merchant.name &&
-                            _category == previousCategory &&
-                            !_splitEnabled) {
-                          setState(() => _category = category);
-                        }
-                      },
+                      onSelected: _vm.selectMerchant,
                     )
                   else
                     TextFormField(
                       controller: _merchant,
                       decoration: InputDecoration(
-                        labelText: _type == TransactionType.income
+                        labelText: state.type == TransactionType.income
                             ? 'Pagador'
                             : 'Comercio',
                       ),
                     ),
                 ],
                 const SizedBox(height: 8),
-                TextButton.icon(
-                  onPressed: _payLater || _installments
-                      ? null
-                      : () => setState(() => _advanced = !_advanced),
-                  icon: Icon(
-                    _advanced || _payLater || _installments
-                        ? Icons.expand_less
-                        : Icons.tune,
-                  ),
-                  label: Text(
-                    _advanced || _payLater || _installments
-                        ? 'Ocultar detalles'
-                        : 'Más detalles',
-                  ),
-                ),
-                if (_advanced || _payLater || _installments) ...[
-                  if (_type == TransactionType.expense &&
-                      (widget.editId == null || _isCreditExpense(accounts)))
-                    DropdownButtonFormField<String>(
-                      key: ValueKey((
-                        'when',
-                        _isCreditExpense(accounts),
-                        _installments
-                            ? 'installments'
-                            : _payLater
-                            ? 'later'
-                            : 'now',
-                      )),
-                      isExpanded: true,
-                      initialValue: _installments
-                          ? 'installments'
-                          : _payLater
-                          ? 'later'
-                          : 'now',
-                      decoration: const InputDecoration(labelText: 'Cuándo'),
-                      items: [
-                        const DropdownMenuItem(
-                          value: 'now',
-                          child: Text('Ahora'),
-                        ),
-                        if (!_isCreditExpense(accounts))
-                          const DropdownMenuItem(
-                            value: 'later',
-                            child: Text('Pagar después'),
-                          ),
-                        const DropdownMenuItem(
-                          value: 'installments',
-                          child: Text('En cuotas'),
-                        ),
-                      ],
-                      onChanged: (value) => setState(() {
-                        final credit = _isCreditExpense(accounts);
-                        _installments = value == 'installments';
-                        _payLater =
-                            !credit && (value == 'later' || _installments);
-                        _repeat = value == 'later' ? _repeat : null;
-                      }),
-                    ),
-                  if (_installmentsOn(accounts))
-                    DropdownButtonFormField<int>(
-                      isExpanded: true,
-                      initialValue: _installmentCount,
-                      decoration: const InputDecoration(
-                        labelText: 'Cantidad de cuotas',
-                      ),
-                      items: [
-                        for (var count = 2; count <= 120; count++)
-                          DropdownMenuItem(
-                            value: count,
-                            child: Text(
-                              '$count cuotas',
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _installmentCount = value ?? 2),
-                    ),
-                  if (_pendingOn(accounts) && !_installments)
-                    DropdownButtonFormField<String?>(
-                      key: ValueKey(_repeat),
-                      initialValue: _repeat,
-                      isExpanded: true,
-                      decoration: const InputDecoration(labelText: 'Repetir'),
-                      items: const [
-                        DropdownMenuItem(
-                          value: null,
-                          child: Text('No repetir'),
-                        ),
-                        DropdownMenuItem(
-                          value: 'monthly',
-                          child: Text('Mensual'),
-                        ),
-                        DropdownMenuItem(value: 'yearly', child: Text('Anual')),
-                      ],
-                      onChanged: (value) => setState(() => _repeat = value),
-                    ),
-                  if ((_installmentsOn(accounts) || _pendingOn(accounts)) &&
-                      !widget.editTemplate)
-                    ListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: Text(
-                        _installmentsOn(accounts)
-                            ? 'Primera cuota'
-                            : 'Fecha de pago',
-                      ),
-                      subtitle: Text(
-                        MaterialLocalizations.of(
-                          context,
-                        ).formatShortDate(_firstInstallmentDate ?? _occurredAt),
-                      ),
-                      trailing: const Icon(Icons.calendar_month_outlined),
-                      onTap: () async {
-                        final first = _firstInstallmentDate ?? _occurredAt;
-                        final picked = await showDatePicker(
-                          context: context,
-                          initialDate: first,
-                          firstDate: DateTime(2000),
-                          lastDate: DateTime(2100),
-                        );
-                        if (picked != null && mounted) {
-                          setState(
-                            () => _firstInstallmentDate = DateTime.utc(
-                              picked.year,
-                              picked.month,
-                              picked.day,
-                              12,
-                            ),
-                          );
-                        }
-                      },
-                    ),
-                  if (_pendingOn(accounts))
-                    PaymentReminderFields(
-                      value: _reminders,
-                      onChanged: (v) => setState(() => _reminders = v),
-                    ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    leading: const Icon(Icons.calendar_today),
-                    title: const Text('Fecha'),
-                    subtitle: Text(
-                      '${_occurredAt.day}/${_occurredAt.month}/${_occurredAt.year}',
-                    ),
-                    onTap: _pickDate,
-                  ),
-                  DropdownButtonFormField<PaymentChannel>(
-                    key: ValueKey(_channel),
-                    initialValue: _channel,
-                    decoration: const InputDecoration(labelText: 'Canal'),
-                    items: [
-                      for (final channel in channels)
-                        DropdownMenuItem(
-                          value: channel,
-                          child: Text(_channelLabel(channel)),
-                        ),
-                    ],
-                    onChanged: (value) =>
-                        setState(() => _channel = value ?? _channel),
-                  ),
-                  const SizedBox(height: 12),
-                  TextFormField(
-                    controller: _note,
-                    maxLines: 2,
-                    decoration: const InputDecoration(labelText: 'Nota'),
-                  ),
-                ],
+                ..._details(context, state, accounts, channels),
                 if (!widget.editTemplate && widget.editId == null)
                   CheckboxListTile(
                     contentPadding: EdgeInsets.zero,
-                    value: _saveAnother,
-                    onChanged: (value) =>
-                        setState(() => _saveAnother = value ?? false),
+                    value: state.saveAnother,
+                    onChanged: (value) => _vm.setSaveAnother(value ?? false),
                     title: const Text('Guardar y crear otro'),
                   ),
                 const SizedBox(height: 16),
                 FilledButton.icon(
-                  onPressed: _saving
+                  onPressed: state.saving
                       ? null
                       : () => widget.editTemplate
                             ? _saveTemplate()
                             : _save(accounts),
                   icon: const Icon(Icons.check),
                   label: Text(
-                    _saving
+                    state.saving
                         ? 'Guardando…'
                         : widget.editTemplate
                         ? 'Guardar plantilla'
@@ -673,394 +298,224 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     );
   }
 
-  Future<void> _loadSavedTemplate(String id) async {
-    _loadingTemplate = true;
-    _templateError = null;
-    try {
-      final template = await ref.read(manualTemplateServiceProvider).read(id);
-      if (template == null) throw StateError('La plantilla ya no existe.');
-      if (!mounted) return;
-      final f = template.fields;
-      final merchantId = f['merchantId'] as String?;
-      final linkedMerchant = merchantId == null
-          ? null
-          : await ref.read(merchantServiceProvider).find(merchantId);
-      if (!mounted) return;
-      setState(() {
-        _templateName = template.name;
-        if (widget.editTemplate && f['schedule'] is Map) {
-          _templateSchedule = Map<String, dynamic>.from(f['schedule'] as Map);
+  Widget _amountField(BuildContext context) => TextFormField(
+    controller: _amount,
+    inputFormatters: [PygInputFormatter()],
+    autofocus: widget.cloneId == null,
+    keyboardType: TextInputType.number,
+    textInputAction: TextInputAction.next,
+    style: Theme.of(context).textTheme.headlineMedium,
+    decoration: const InputDecoration(prefixText: 'PYG ', labelText: 'Importe'),
+    validator: (value) {
+      try {
+        if (Money.parse(value ?? '').minorUnits <= 0) {
+          return 'Debe ser mayor que cero';
         }
-        _type = TransactionType.values.byName(f['type'] as String);
-        _amount.text = f['amountMinor'] == null
-            ? ''
-            : Money(f['amountMinor'] as int).format(withCode: false).trim();
-        _from = f['from'] as String?;
-        _to = f['to'] as String?;
-        _category = f['category'] as String?;
-        _selectedMerchant = linkedMerchant?.isArchived == false
-            ? linkedMerchant
-            : null;
-        _merchant.text =
-            _selectedMerchant?.name ?? f['merchant'] as String? ?? '';
-        _note.text = f['note'] as String? ?? '';
-        _channel = PaymentChannel.values.byName(
-          f['channel'] as String? ?? 'other',
-        );
-        _payLater = f['payLater'] as bool? ?? false;
-        _installments = f['installments'] as bool? ?? false;
-        _installmentCount = f['installmentCount'] as int? ?? 2;
-        _reminders = f['reminders'] is Map
-            ? PaymentReminderSettings.fromJson(f['reminders'] as Map)
-            : const PaymentReminderSettings();
-        _splitEnabled = f['splitEnabled'] as bool? ?? false;
-        for (final item in f['splits'] as List? ?? []) {
-          _splits.add(
-            _SplitInput(categoryId: item['category'] as String?)
-              ..amount.text = item['amountMinor'] == null
-                  ? ''
-                  : Money(item['amountMinor'] as int)
-                        .format(withCode: false)
-                        .trim(),
-          );
-        }
-        _advanced = _installments || _payLater || _note.text.isNotEmpty;
-        if (widget.savedTemplateId != null) _baseline = _draftSnapshot;
-      });
-    } catch (error) {
-      if (mounted) _templateError = '$error';
-    } finally {
-      if (mounted) setState(() => _loadingTemplate = false);
-    }
-  }
-
-  Future<({String name, Map<String, dynamic> fields})?> _collectTemplate({
-    bool afterRegistration = false,
-  }) async {
-    String name = _templateName;
-    bool includeAmount = _amount.text.trim().isNotEmpty;
-    bool automatic = _templateSchedule?['enabled'] == true;
-    var reminderSettings = _reminders;
-    String frequency = _templateSchedule?['frequency'] as String? ?? 'monthly';
-    DateTime nextDate = _templateSchedule?['nextDate'] is String
-        ? parseScheduledDate(_templateSchedule!['nextDate'] as String)
-        : afterRegistration
-        ? nextScheduledDate(_occurredAt, {
-            'frequency': 'monthly',
-            'anchorDay': _occurredAt.day,
-          })
-        : DateTime.now();
-    final originalDate = scheduledDate(nextDate);
-    final originalFrequency = frequency;
-    final choice = await showSaveTemplateDialog(
-      context,
-      name: name,
-      includeAmount: includeAmount,
-      automatic: automatic,
-      frequency: frequency,
-      nextDate: nextDate,
-      reminders: reminderSettings,
-      nextDateForFrequency: afterRegistration && _templateSchedule == null
-          ? (value) => nextScheduledDate(_occurredAt, {
-              'frequency': value,
-              'anchorDay': _occurredAt.day,
-              'anchorMonth': _occurredAt.month,
-            })
-          : null,
-    );
-    if (choice == null || !mounted) return null;
-    name = choice.name;
-    includeAmount = choice.includeAmount;
-    automatic = choice.automatic;
-    frequency = choice.frequency;
-    nextDate = choice.nextDate;
-    reminderSettings = choice.reminders;
-    final choseDate = choice.choseDate;
-    try {
-      final amount = includeAmount
-          ? Money.parse(_amount.text).minorUnits
-          : null;
-      if (amount != null && amount <= 0) {
-        throw const FormatException('El importe debe ser mayor que cero.');
+      } catch (_) {
+        return 'Ingresá un importe válido';
       }
-      return (
-        name: name,
-        fields: <String, dynamic>{
-          'schedule': {
-            'enabled': automatic,
-            'paused':
-                !automatic &&
-                (_templateSchedule?['enabled'] == true ||
-                    _templateSchedule?['paused'] == true),
-            'frequency': frequency,
-            'nextDate': scheduledDate(nextDate),
-            'anchorDay':
-                afterRegistration && _templateSchedule == null && !choseDate
-                ? _occurredAt.day
-                : originalDate == scheduledDate(nextDate) &&
-                      originalFrequency == frequency
-                ? (_templateSchedule?['anchorDay'] ?? nextDate.day)
-                : nextDate.day,
-            'anchorMonth':
-                afterRegistration && _templateSchedule == null && !choseDate
-                ? _occurredAt.month
-                : originalDate == scheduledDate(nextDate) &&
-                      originalFrequency == frequency
-                ? (_templateSchedule?['anchorMonth'] ?? nextDate.month)
-                : nextDate.month,
-          },
-          'type': _type.name,
-          'amountMinor': amount,
-          'from': _needsFrom ? _from : null,
-          'to': _needsTo ? _to : null,
-          'category': _category,
-          'merchant': _merchant.text.trim(),
-          'merchantId': _selectedMerchant?.name == _merchant.text
-              ? _selectedMerchant?.id
-              : null,
-          'note': _note.text.trim(),
-          'channel': _channel.name,
-          'payLater': _payLater,
-          'installments': _installments,
-          'installmentCount': _installmentCount,
-          'reminders': reminderSettings.toJson(),
-          'splitEnabled': includeAmount && _splitEnabled,
-          'splits': [
-            if (includeAmount && _splitEnabled)
-              for (final split in _splits)
-                {
-                  'category': split.categoryId,
-                  'amountMinor': Money.parse(split.amount.text).minorUnits,
-                },
-          ],
-        },
-      );
-    } catch (error) {
-      if (mounted) _message('$error');
       return null;
-    }
-  }
+    },
+  );
 
-  Future<void> _saveTemplate() async {
-    setState(() => _saving = true);
-    try {
-      final template = await _collectTemplate();
-      if (template == null || !mounted) return;
-      await ref
-          .read(transactionFormServiceProvider)
-          .saveTemplate(
-            template,
-            bookGeneration: _bookGeneration,
-            id: widget.editTemplate ? widget.savedTemplateId : null,
-          );
-      if ((template.fields['schedule'] as Map?)?['enabled'] == true &&
-          (template.fields['reminders'] as Map?)?['enabled'] == true) {
-        await _requestReminderPermission();
-      }
-      if (mounted) {
-        _message('Plantilla guardada.');
-        setState(() {
-          _baseline = _draftSnapshot;
-          _saving = false;
-        });
-        await WidgetsBinding.instance.endOfFrame;
-        if (mounted && widget.editTemplate) context.pop();
-      }
-    } catch (error) {
-      if (mounted) _message('$error');
-    } finally {
-      if (mounted) setState(() => _saving = false);
-    }
-  }
-
-  Future<void> _useTemplate() async {
-    final templates = await ref.read(manualTemplateServiceProvider).list();
-    if (!mounted) return;
-    templates.sort((a, b) {
-      final aMatches = a.fields['type'] == _type.name;
-      final bMatches = b.fields['type'] == _type.name;
-      if (aMatches != bMatches) return aMatches ? -1 : 1;
-      return a.name.toLowerCase().compareTo(b.name.toLowerCase());
-    });
-    final selected = await showTemplatePicker(
-      context,
-      templates: templates,
-      offerSave: !(_payLater && _type == TransactionType.expense),
-      saving: _alsoSaveTemplate,
-    );
-    if (selected == null || !mounted) return;
-    switch (selected) {
-      case ToggleSaveAsTemplate():
-        setState(() => _alsoSaveTemplate = !_alsoSaveTemplate);
-        return;
-      case ManageTemplates():
-        context.push('/templates');
-        return;
-      case UseTemplate():
-        break;
-    }
-    for (final split in _splits) {
-      split.dispose();
-    }
-    setState(() {
-      _splits.clear();
-      _selectedMerchant = null;
-      _templateSchedule = null;
-      _alsoSaveTemplate = false;
-      _occurredAt = DateTime.now();
-      _firstInstallmentDate = null;
-    });
-    await _loadSavedTemplate(selected.id);
-  }
-
-  bool get _needsFrom =>
-      _type == TransactionType.expense || _type == TransactionType.transfer;
-  bool get _needsTo =>
-      _type == TransactionType.income || _type == TransactionType.transfer;
-
-  bool _categoryMatchesType(CategoryRecord category) =>
-      category.kind == 'both' ||
-      (_type == TransactionType.income
-          ? category.kind == 'income'
-          : category.kind == 'expense');
-
-  bool _pendingOn(List<AccountRecord> accounts) =>
-      _payLater &&
-      _type == TransactionType.expense &&
-      !_isCreditExpense(accounts) &&
-      widget.editId == null;
-
-  bool _installmentsOn(List<AccountRecord> accounts) =>
-      _installments &&
-      _type == TransactionType.expense &&
-      (_isCreditExpense(accounts) || _pendingOn(accounts));
-
-  bool _isCreditExpense(List<AccountRecord> accounts) =>
-      _type == TransactionType.expense &&
-      accounts.where((account) => account.id == _from).firstOrNull?.type ==
-          AccountType.creditCard.name;
-
-  Future<void> _save(List<AccountRecord> accounts) async {
-    if (!_formKey.currentState!.validate()) return;
-    if (_needsFrom && _from == null || _needsTo && _to == null) {
-      _message('Seleccioná las cuentas necesarias.');
-      return;
-    }
-    try {
-      setState(() => _saving = true);
-      final pendingPlan = _pendingOn(accounts);
-      final installments = _installmentsOn(accounts);
-      final template = _alsoSaveTemplate && !pendingPlan
-          ? await _collectTemplate(afterRegistration: true)
-          : null;
-      if (!mounted) return;
-      if (_alsoSaveTemplate && !pendingPlan && template == null) {
-        setState(() => _saving = false);
-        return;
-      }
-      final service = ref.read(transactionFormServiceProvider);
-      final outcome = await service.submit(
-        TransactionFormValues(
-          type: _type,
-          amountText: _amount.text,
-          occurredAt: _occurredAt,
-          from: _from,
-          to: _to,
-          merchantText: _merchant.text,
-          selectedMerchant: _selectedMerchant,
-          originalMerchantId: _originalMerchantId,
-          note: _note.text,
-          channel: _channel,
-          category: _category,
-          splitEnabled: _splitEnabled,
-          splits: [
-            for (final split in _splits)
-              (categoryId: split.categoryId, amountText: split.amount.text),
-          ],
-          pendingPlan: pendingPlan,
-          installments: installments,
-          installmentCount: _installmentCount,
-          firstInstallmentDate: _firstInstallmentDate,
-          repeat: _repeat,
-          reminders: _reminders,
-          editId: widget.editId,
-          editingUpdatedAt: _editingUpdatedAt,
-          bookGeneration: _bookGeneration,
-          template: template,
-        ),
+  Widget _typeSelector(TransactionFormState state) {
+    final onChange = widget.editId != null ? null : _vm.setType;
+    if (MediaQuery.sizeOf(context).width < 420 &&
+        MediaQuery.textScalerOf(context).scale(14) > 20) {
+      return DropdownButtonFormField<TransactionType>(
+        initialValue: state.type,
+        isExpanded: true,
+        decoration: const InputDecoration(labelText: 'Tipo'),
+        items: const [
+          DropdownMenuItem(
+            value: TransactionType.expense,
+            child: Text('Gasto'),
+          ),
+          DropdownMenuItem(
+            value: TransactionType.income,
+            child: Text('Ingreso'),
+          ),
+          DropdownMenuItem(
+            value: TransactionType.transfer,
+            child: Text('Transferir'),
+          ),
+        ],
+        onChanged: onChange == null
+            ? null
+            : (value) => onChange(value ?? state.type),
       );
-      if (outcome.requestReminderPermission) await _requestReminderPermission();
-      if (!mounted) return;
-      await service.rememberLastAccounts(type: _type, from: _from, to: _to);
-      HapticFeedback.lightImpact();
-      if (!mounted) return;
-      if (_saveAnother) {
-        _amount.clear();
-        _merchant.clear();
-        _selectedMerchant = null;
-        _alsoSaveTemplate = false;
-        _templateName = '';
-        _note.clear();
-        setState(() {
-          _saving = false;
-          _baseline = _draftSnapshot;
-        });
-        _message('Movimiento guardado.');
-      } else {
-        setState(() {
-          _saving = false;
-          _baseline = _draftSnapshot;
-        });
-        await WidgetsBinding.instance.endOfFrame;
-        if (mounted) context.pop();
-      }
-    } catch (error) {
-      _message('$error');
-      if (mounted) setState(() => _saving = false);
     }
+    return SegmentedButton<TransactionType>(
+      segments: const [
+        ButtonSegment(
+          value: TransactionType.expense,
+          label: Text('Gasto'),
+          icon: Icon(Icons.south_west),
+        ),
+        ButtonSegment(
+          value: TransactionType.income,
+          label: Text('Ingreso'),
+          icon: Icon(Icons.north_east),
+        ),
+        ButtonSegment(
+          value: TransactionType.transfer,
+          label: Text('Transferir'),
+          icon: Icon(Icons.swap_horiz),
+        ),
+      ],
+      selected: {state.type},
+      onSelectionChanged: onChange == null
+          ? null
+          : (value) => onChange(value.first),
+    );
   }
 
-  Future<void> _requestReminderPermission() async {
-    try {
-      final allowed = await ref
-          .read(paymentReminderBridgeProvider)
-          .requestPermission();
-      if (!allowed && mounted) _message('Guardado. Recordatorios sin permiso.');
-    } catch (_) {
-      if (mounted) _message('Guardado. Recordatorios no disponibles.');
-    }
+  /// «Más detalles»: cuándo se paga, cuotas, repetición, fecha, canal y nota.
+  List<Widget> _details(
+    BuildContext context,
+    TransactionFormState state,
+    List<AccountRecord> accounts,
+    List<PaymentChannel> channels,
+  ) {
+    final open = state.advanced || state.payLater || state.installments;
+    final credit = state.isCreditExpense(accounts);
+    final installmentsOn = state.installmentsOn(accounts);
+    final pendingOn = state.pendingOn(accounts);
+    final when = state.installments
+        ? 'installments'
+        : state.payLater
+        ? 'later'
+        : 'now';
+    return [
+      TextButton.icon(
+        onPressed: state.payLater || state.installments
+            ? null
+            : _vm.toggleAdvanced,
+        icon: Icon(open ? Icons.expand_less : Icons.tune),
+        label: Text(open ? 'Ocultar detalles' : 'Más detalles'),
+      ),
+      if (open) ...[
+        if (state.type == TransactionType.expense &&
+            (widget.editId == null || credit))
+          DropdownButtonFormField<String>(
+            key: ValueKey(('when', credit, when)),
+            isExpanded: true,
+            initialValue: when,
+            decoration: const InputDecoration(labelText: 'Cuándo'),
+            items: [
+              const DropdownMenuItem(value: 'now', child: Text('Ahora')),
+              if (!credit)
+                const DropdownMenuItem(
+                  value: 'later',
+                  child: Text('Pagar después'),
+                ),
+              const DropdownMenuItem(
+                value: 'installments',
+                child: Text('En cuotas'),
+              ),
+            ],
+            onChanged: (value) => _vm.setWhen(value ?? 'now'),
+          ),
+        if (installmentsOn)
+          DropdownButtonFormField<int>(
+            isExpanded: true,
+            initialValue: state.installmentCount,
+            decoration: const InputDecoration(labelText: 'Cantidad de cuotas'),
+            items: [
+              for (var count = 2; count <= 120; count++)
+                DropdownMenuItem(
+                  value: count,
+                  child: Text(
+                    '$count cuotas',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+            ],
+            onChanged: (value) => _vm.setInstallmentCount(value ?? 2),
+          ),
+        if (pendingOn && !state.installments)
+          DropdownButtonFormField<String?>(
+            key: ValueKey(state.repeat),
+            initialValue: state.repeat,
+            isExpanded: true,
+            decoration: const InputDecoration(labelText: 'Repetir'),
+            items: const [
+              DropdownMenuItem(value: null, child: Text('No repetir')),
+              DropdownMenuItem(value: 'monthly', child: Text('Mensual')),
+              DropdownMenuItem(value: 'yearly', child: Text('Anual')),
+            ],
+            onChanged: _vm.setRepeat,
+          ),
+        if ((installmentsOn || pendingOn) && !widget.editTemplate)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(installmentsOn ? 'Primera cuota' : 'Fecha de pago'),
+            subtitle: Text(
+              MaterialLocalizations.of(
+                context,
+              ).formatShortDate(state.firstInstallmentDate ?? state.occurredAt),
+            ),
+            trailing: const Icon(Icons.calendar_month_outlined),
+            onTap: () async {
+              final picked = await showDatePicker(
+                context: context,
+                initialDate: state.firstInstallmentDate ?? state.occurredAt,
+                firstDate: DateTime(2000),
+                lastDate: DateTime(2100),
+              );
+              if (picked != null && mounted) {
+                _vm.setFirstInstallmentDate(picked);
+              }
+            },
+          ),
+        if (pendingOn)
+          PaymentReminderFields(
+            value: state.reminders,
+            onChanged: _vm.setReminders,
+          ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.calendar_today),
+          title: const Text('Fecha'),
+          subtitle: Text(
+            '${state.occurredAt.day}/${state.occurredAt.month}/${state.occurredAt.year}',
+          ),
+          onTap: _pickDate,
+        ),
+        DropdownButtonFormField<PaymentChannel>(
+          key: ValueKey(state.channel),
+          initialValue: state.channel,
+          decoration: const InputDecoration(labelText: 'Canal'),
+          items: [
+            for (final channel in channels)
+              DropdownMenuItem(
+                value: channel,
+                child: Text(_channelLabel(channel)),
+              ),
+          ],
+          onChanged: (value) => _vm.setChannel(value ?? state.channel),
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          controller: _note,
+          maxLines: 2,
+          decoration: const InputDecoration(labelText: 'Nota'),
+        ),
+      ],
+    ];
   }
+
+  // --- acciones que necesitan el contexto ---
 
   Future<void> _pickDate() async {
     final value = await showDatePicker(
       context: context,
-      initialDate: _occurredAt,
+      initialDate: _state.occurredAt,
       firstDate: DateTime(2000),
       lastDate: DateTime.now().add(const Duration(days: 365)),
     );
-    if (value != null && mounted) {
-      setState(() {
-        final old = _occurredAt;
-        if (_firstInstallmentDate != null &&
-            _firstInstallmentDate!.year == old.year &&
-            _firstInstallmentDate!.month == old.month &&
-            _firstInstallmentDate!.day == old.day) {
-          _firstInstallmentDate = DateTime.utc(
-            value.year,
-            value.month,
-            value.day,
-            12,
-          );
-        }
-        _occurredAt = DateTime(
-          value.year,
-          value.month,
-          value.day,
-          _occurredAt.hour,
-          _occurredAt.minute,
-        );
-      });
-    }
+    if (value != null && mounted) _vm.setOccurredAt(value);
   }
 
   Future<void> _createCategory() async {
@@ -1072,109 +527,135 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     );
     if (value == null || !mounted) return;
     try {
-      final id = await ref
-          .read(categoryServiceProvider)
-          .create(
-            value,
-            kind: _type == TransactionType.income ? 'income' : 'expense',
-          );
-      if (mounted) {
-        setState(() {
-          _awaitingCategory = id;
-          _category = id;
-        });
-      }
+      await _vm.createCategory(value);
     } catch (error) {
       _message('$error');
     }
   }
 
-  void _toggleSplits(List<CategoryRecord> categories) {
-    setState(() {
-      _splitEnabled = !_splitEnabled;
-      if (_splitEnabled && _splits.isEmpty) {
-        _splits.addAll([
-          _SplitInput(
-            categoryId:
-                _category ??
-                categories.where(_categoryMatchesType).firstOrNull?.id,
-          ),
-          _SplitInput(),
-        ]);
-      }
-    });
-  }
-
-  void _applyTemplate(String template, List<AccountRecord> accounts) {
+  Future<void> _useTemplate() async {
+    final templates = await _vm.templatesForPicker();
     if (!mounted) return;
-    setState(() {
-      if (template == 'cardPayment') {
-        _type = TransactionType.transfer;
-        _from = accounts
-            .where((account) => account.type == AccountType.bank.name)
-            .firstOrNull
-            ?.id;
-        _to ??= accounts
-            .where((account) => account.type == AccountType.creditCard.name)
-            .firstOrNull
-            ?.id;
-      }
-      _baseline = _draftSnapshot;
-    });
+    final state = _state;
+    final selected = await showTemplatePicker(
+      context,
+      templates: templates,
+      offerSave: !(state.payLater && state.type == TransactionType.expense),
+      saving: state.alsoSaveTemplate,
+    );
+    if (selected == null || !mounted) return;
+    switch (selected) {
+      case ToggleSaveAsTemplate():
+        _vm.setAlsoSaveTemplate(!state.alsoSaveTemplate);
+      case ManageTemplates():
+        context.push('/templates');
+      case UseTemplate():
+        await _vm.useTemplate(selected.id);
+    }
   }
 
-  Future<void> _loadClone(String id) async {
-    setState(() => _loadingTemplate = true);
+  /// Pregunta cómo guardar la plantilla; `null` si se cancela o no es válida.
+  Future<TemplateToSave?> _collectTemplate({
+    bool afterRegistration = false,
+  }) async {
+    final state = _state;
+    final defaults = state.templateDefaults(
+      afterRegistration: afterRegistration,
+    );
+    final choice = await showSaveTemplateDialog(
+      context,
+      name: state.templateName,
+      includeAmount: defaults.includeAmount,
+      automatic: defaults.automatic,
+      frequency: defaults.frequency,
+      nextDate: defaults.nextDate,
+      reminders: state.reminders,
+      nextDateForFrequency: defaults.nextDateForFrequency,
+    );
+    if (choice == null || !mounted) return null;
     try {
-      final source = await ref.read(ledgerRepositoryProvider).loadForForm(id);
-      final row = source.transaction;
-      final splits = source.splits;
-      final plan = source.plan;
-      final merchant = source.merchant;
-      final oldAccounts = source.accounts;
-      final oldCategories = source.categories;
-      if (!mounted) return;
-      setState(() {
-        _editingAccounts = oldAccounts;
-        _editingCategories = oldCategories;
-        _type = TransactionType.values.byName(row.type);
-        _amount.text = Money(row.amountMinor).format(withCode: false).trim();
-        _originalMerchantId = widget.editId != null ? row.merchantId : null;
-        _selectedMerchant =
-            widget.editId != null || merchant?.isArchived == false
-            ? merchant
-            : null;
-        _merchant.text = _selectedMerchant?.name ?? row.description;
-        _note.text = row.note;
-        _from = row.fromAccountId;
-        _to = row.toAccountId;
-        _channel = PaymentChannel.values.byName(row.paymentChannel);
-        _occurredAt = widget.editId != null
-            ? row.occurredAt.toLocal()
-            : DateTime.now();
-        _editingUpdatedAt = row.updatedAt;
-        _installments = plan != null;
-        _installmentCount = plan?.installmentCount ?? 2;
-        _firstInstallmentDate = widget.editId != null
-            ? plan?.firstPeriod.toUtc()
-            : null;
-        _splitEnabled = splits.length > 1;
-        _category = splits.length == 1 ? splits.single.categoryId : null;
-        for (final split in splits.where((_) => _splitEnabled)) {
-          _splits.add(
-            _SplitInput(categoryId: split.categoryId)
-              ..amount.text = Money(split.amountMinor)
-                  .format(withCode: false)
-                  .trim(),
-          );
-        }
-        _advanced = true;
-        _baseline = _draftSnapshot;
-      });
+      return _state.templateFrom(
+        choice,
+        afterRegistration: afterRegistration,
+        originalNextDate: defaults.nextDate,
+        originalFrequency: defaults.frequency,
+      );
     } catch (error) {
-      if (mounted) _templateError = '$error';
+      _message('$error');
+      return null;
+    }
+  }
+
+  Future<void> _saveTemplate() async {
+    _vm.setSaving(true);
+    try {
+      final template = await _collectTemplate();
+      if (template == null || !mounted) return;
+      await _vm.saveTemplate(template);
+      if ((template.fields['schedule'] as Map?)?['enabled'] == true &&
+          (template.fields['reminders'] as Map?)?['enabled'] == true) {
+        await _requestReminderPermission();
+      }
+      if (mounted) {
+        _message('Plantilla guardada.');
+        _vm.finishSave();
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted && widget.editTemplate) context.pop();
+      }
+    } catch (error) {
+      if (mounted) _message('$error');
     } finally {
-      if (mounted) setState(() => _loadingTemplate = false);
+      if (mounted) _vm.setSaving(false);
+    }
+  }
+
+  Future<void> _save(List<AccountRecord> accounts) async {
+    if (!_formKey.currentState!.validate()) return;
+    final state = _state;
+    if (state.needsFrom && state.from == null ||
+        state.needsTo && state.to == null) {
+      _message('Seleccioná las cuentas necesarias.');
+      return;
+    }
+    try {
+      _vm.setSaving(true);
+      final pendingPlan = state.pendingOn(accounts);
+      final template = state.alsoSaveTemplate && !pendingPlan
+          ? await _collectTemplate(afterRegistration: true)
+          : null;
+      if (!mounted) return;
+      if (state.alsoSaveTemplate && !pendingPlan && template == null) {
+        _vm.setSaving(false);
+        return;
+      }
+      final outcome = await _vm.submit(template);
+      if (outcome.requestReminderPermission) await _requestReminderPermission();
+      if (!mounted) return;
+      await _vm.rememberLastAccounts();
+      HapticFeedback.lightImpact();
+      if (!mounted) return;
+      if (_state.saveAnother) {
+        _vm.resetForAnother();
+        _message('Movimiento guardado.');
+      } else {
+        _vm.finishSave();
+        await WidgetsBinding.instance.endOfFrame;
+        if (mounted) context.pop();
+      }
+    } catch (error) {
+      _message('$error');
+      if (mounted) _vm.setSaving(false);
+    }
+  }
+
+  Future<void> _requestReminderPermission() async {
+    try {
+      final allowed = await ref
+          .read(paymentReminderBridgeProvider)
+          .requestPermission();
+      if (!allowed && mounted) _message('Guardado. Recordatorios sin permiso.');
+    } catch (_) {
+      if (mounted) _message('Guardado. Recordatorios no disponibles.');
     }
   }
 
@@ -1277,11 +758,71 @@ final class _CategoryDropdown extends StatelessWidget {
   );
 }
 
-final class _SplitInput {
-  _SplitInput({this.categoryId}) : amount = TextEditingController();
+/// Una fila de la división: categoría e importe. El importe vive en su propio
+/// campo y se copia al estado al escribir.
+class _SplitRow extends StatefulWidget {
+  const _SplitRow({
+    required this.split,
+    required this.type,
+    required this.categories,
+    required this.canRemove,
+    required this.onCategory,
+    required this.onAmount,
+    required this.onRemove,
+    super.key,
+  });
 
-  String? categoryId;
-  final TextEditingController amount;
+  final SplitEntry split;
+  final TransactionType type;
+  final List<CategoryRecord> categories;
+  final bool canRemove;
+  final ValueChanged<String?> onCategory;
+  final ValueChanged<String> onAmount;
+  final VoidCallback onRemove;
 
-  void dispose() => amount.dispose();
+  @override
+  State<_SplitRow> createState() => _SplitRowState();
+}
+
+class _SplitRowState extends State<_SplitRow> {
+  late final _amount = TextEditingController(text: widget.split.amountText);
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Padding(
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Row(
+      children: [
+        Expanded(
+          child: _CategoryDropdown(
+            identity: (widget.split.id, widget.type, widget.split.categoryId),
+            categories: widget.categories,
+            value: widget.split.categoryId,
+            expanded: true,
+            onChanged: widget.onCategory,
+          ),
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: TextFormField(
+            controller: _amount,
+            inputFormatters: [PygInputFormatter()],
+            keyboardType: TextInputType.number,
+            decoration: const InputDecoration(labelText: 'Importe'),
+            onChanged: widget.onAmount,
+          ),
+        ),
+        IconButton(
+          tooltip: 'Quitar división',
+          onPressed: widget.canRemove ? widget.onRemove : null,
+          icon: const Icon(Icons.remove_circle_outline),
+        ),
+      ],
+    ),
+  );
 }

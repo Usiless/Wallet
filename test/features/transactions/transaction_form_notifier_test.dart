@@ -4,6 +4,7 @@ import 'package:finanzas_locales/core/database/app_database.dart';
 import 'package:finanzas_locales/core/money/money.dart';
 import 'package:finanzas_locales/features/accounts/data/accounts_service.dart';
 import 'package:finanzas_locales/features/merchants/merchant_service.dart';
+import 'package:finanzas_locales/features/payments/domain/pending_payment_models.dart';
 import 'package:finanzas_locales/features/templates/manual_template_service.dart';
 import 'package:finanzas_locales/features/transactions/data/category_service.dart';
 import 'package:finanzas_locales/features/transactions/data/ledger_service.dart';
@@ -504,5 +505,56 @@ void main() {
       await expectLater(notifier.submit(null), throwsStateError);
       expect(await db.select(db.ledgerTransactions).get(), isEmpty);
     });
+  });
+  group('ajustes simples y plantillas', () {
+    test('guarda la cantidad de cuotas y los recordatorios elegidos', () async {
+      final a = args();
+      final notifier = await open(a);
+
+      notifier.setInstallmentCount(12);
+      notifier.setReminders(
+        const PaymentReminderSettings(enabled: false, daysBefore: 5),
+      );
+
+      expect(stateOf(a).installmentCount, 12);
+      expect(stateOf(a).reminders.enabled, isFalse);
+      expect(stateOf(a).reminders.daysBefore, 5);
+    });
+
+    test(
+      'una plantilla que ya no existe deja el error y termina de cargar',
+      () async {
+        final a = args();
+        final notifier = await open(a);
+
+        await notifier.loadTemplate('no-existe', markClean: false);
+
+        expect(stateOf(a).loadError, contains('La plantilla ya no existe'));
+        expect(stateOf(a).loading, isFalse);
+      },
+    );
+
+    test(
+      'el selector lista primero las plantillas del tipo actual, por nombre',
+      () async {
+        final templates = ManualTemplateService(db);
+        await templates.save('Zeta gasto', {'type': 'expense', 'from': bank});
+        await templates.save('beta ingreso', {'type': 'income', 'to': bank});
+        await templates.save('Alfa gasto', {'type': 'expense', 'from': bank});
+        final a = args();
+        final notifier = await open(a);
+
+        expect((await notifier.templatesForPicker()).map((t) => t.name), [
+          'Alfa gasto',
+          'Zeta gasto',
+          'beta ingreso',
+        ]);
+        notifier.setType(TransactionType.income);
+        expect(
+          (await notifier.templatesForPicker()).first.name,
+          'beta ingreso',
+        );
+      },
+    );
   });
 }
