@@ -7,7 +7,7 @@ Las herramientas se habilitan únicamente en modo debug y con `ENABLE_DEVELOPER_
 - `config/development.json`: bandera activada para pruebas.
 - `config/production.json`: bandera desactivada para uso normal.
 - `lib/core/config/feature_flags.dart`: definición central de Dart.
-- `.vscode/launch.json`: perfiles «Wallet — uso normal» y «Wallet — herramientas de desarrollo», disponibles en VSCodium con la extensión Dart/Flutter.
+- `.vscode/launch.json`: perfiles «Wallet — uso normal» (profile, por defecto), «Wallet — uso normal (debug)» y «Wallet — herramientas de desarrollo» (debug), disponibles en VSCodium con la extensión Dart/Flutter.
 
 Para ejecutar con herramientas:
 
