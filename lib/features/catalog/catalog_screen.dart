@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
 import '../../shared/widgets/app_fab.dart';
+import '../../shared/widgets/text_prompt_dialog.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
@@ -180,33 +181,13 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
     MerchantAliasRecord a => a.alias,
     _ => '',
   };
-  Future<String?> _text(String title, String initial) async {
-    final controller = TextEditingController(text: initial);
-    final result = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Guardar'),
-          ),
-        ],
-      ),
-    );
-    // El diálogo aún se anima al cerrarse: liberar el controlador después.
-    Future<void>.delayed(const Duration(milliseconds: 300), controller.dispose);
-    return result;
-  }
+  Future<String?> _text(String title, String initial) => showTextPrompt(
+    context,
+    title: title,
+    label: 'Nombre',
+    confirmLabel: 'Guardar',
+    initial: initial,
+  );
 
   Future<String?> _target(bool account) async {
     final choices = account

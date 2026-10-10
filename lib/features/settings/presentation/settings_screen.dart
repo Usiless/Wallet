@@ -6,6 +6,7 @@ import '../../../app/providers.dart';
 import '../../../core/config/feature_flags.dart';
 import '../../../core/backup/backup_codec.dart';
 import '../../../core/security/app_lock_service.dart';
+import '../../../shared/widgets/text_prompt_dialog.dart';
 
 final class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({this.backups = false, super.key});
@@ -208,35 +209,14 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<String?> _passwordDialog(String title) async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          obscureText: true,
-          autofocus: true,
-          decoration: const InputDecoration(
-            labelText: 'Contraseña',
-            helperText:
-                'Mínimo 8 caracteres. No puede recuperarse si la olvidás.',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, controller.text),
-            child: const Text('Continuar'),
-          ),
-        ],
-      ),
-    );
-  }
+  Future<String?> _passwordDialog(String title) => showTextPrompt(
+    context,
+    title: title,
+    label: 'Contraseña',
+    helper: 'Mínimo 8 caracteres. No puede recuperarse si la olvidás.',
+    confirmLabel: 'Continuar',
+    obscure: true,
+  );
 
   Future<bool> _confirmRestore(BackupSummary summary) async {
     return await showDialog<bool>(

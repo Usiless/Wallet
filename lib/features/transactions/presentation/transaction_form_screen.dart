@@ -14,8 +14,10 @@ import '../../payments/domain/pending_payment_models.dart';
 import '../../payments/presentation/payment_reminder_fields.dart';
 import '../domain/payment_channel_policy.dart';
 import '../../merchants/merchant_autocomplete.dart';
+import '../../templates/save_template_dialog.dart';
+import '../../templates/template_picker_sheet.dart';
 import '../../templates/scheduled_template_service.dart';
-import '../../templates/template_summary.dart';
+import '../../../shared/widgets/text_prompt_dialog.dart';
 
 final class TransactionFormScreen extends ConsumerStatefulWidget {
   const TransactionFormScreen({
@@ -368,37 +370,11 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                 if (_type != TransactionType.transfer) ...[
                   const SizedBox(height: 12),
                   if (!_splitEnabled)
-                    DropdownButtonFormField<String>(
-                      key: ValueKey((
-                        'category',
-                        _type,
-                        _category,
-                        availableCategories.map((row) => row.id).join(','),
-                      )),
-                      initialValue:
-                          availableCategories.any((row) => row.id == _category)
-                          ? _category
-                          : null,
-                      decoration: InputDecoration(
-                        labelText: 'Categoría',
-                        suffixIcon: IconButton(
-                          tooltip: 'Crear categoría',
-                          onPressed: () => _createCategory(categories),
-                          icon: const Icon(Icons.add),
-                        ),
-                      ),
-                      items: [
-                        for (final category in categories.where(
-                          _categoryMatchesType,
-                        ))
-                          DropdownMenuItem(
-                            value: category.id,
-                            child: Text(
-                              category.name,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                      ],
+                    _CategoryDropdown(
+                      identity: ('category', _type, _category),
+                      categories: availableCategories,
+                      value: _category,
+                      onCreate: _createCategory,
                       onChanged: (value) => setState(() => _category = value),
                     ),
                   TextButton.icon(
@@ -419,38 +395,15 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                         child: Row(
                           children: [
                             Expanded(
-                              child: DropdownButtonFormField<String>(
-                                isExpanded: true,
-                                key: ValueKey((
+                              child: _CategoryDropdown(
+                                identity: (
                                   _splits[index],
                                   _type,
                                   _splits[index].categoryId,
-                                  availableCategories
-                                      .map((row) => row.id)
-                                      .join(','),
-                                )),
-                                initialValue:
-                                    availableCategories.any(
-                                      (row) =>
-                                          row.id == _splits[index].categoryId,
-                                    )
-                                    ? _splits[index].categoryId
-                                    : null,
-                                decoration: const InputDecoration(
-                                  labelText: 'Categoría',
                                 ),
-                                items: [
-                                  for (final category in categories.where(
-                                    _categoryMatchesType,
-                                  ))
-                                    DropdownMenuItem(
-                                      value: category.id,
-                                      child: Text(
-                                        category.name,
-                                        overflow: TextOverflow.ellipsis,
-                                      ),
-                                    ),
-                                ],
+                                categories: availableCategories,
+                                value: _splits[index].categoryId,
+                                expanded: true,
                                 onChanged: (value) =>
                                     _splits[index].categoryId = value,
                               ),
@@ -800,110 +753,32 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
             'anchorDay': _occurredAt.day,
           })
         : DateTime.now();
-    bool choseDate = false;
     final originalDate = scheduledDate(nextDate);
     final originalFrequency = frequency;
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: const Text('Guardar plantilla'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  initialValue: name,
-                  decoration: const InputDecoration(
-                    labelText: 'Nombre de la plantilla',
-                  ),
-                  onChanged: (value) => update(() => name = value),
-                ),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Recordar importe'),
-                  value: includeAmount,
-                  onChanged: automatic
-                      ? null
-                      : (value) => update(() => includeAmount = value ?? false),
-                ),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('Preparar pagos pendientes'),
-                  value: automatic,
-                  onChanged: (value) => update(() {
-                    automatic = value ?? false;
-                    if (automatic) includeAmount = true;
-                  }),
-                ),
-                if (automatic) ...[
-                  DropdownButtonFormField<String>(
-                    initialValue: frequency,
-                    decoration: const InputDecoration(labelText: 'Frecuencia'),
-                    items: const [
-                      DropdownMenuItem(
-                        value: 'monthly',
-                        child: Text('Mensual'),
-                      ),
-                      DropdownMenuItem(value: 'yearly', child: Text('Anual')),
-                    ],
-                    onChanged: (value) => update(() {
-                      frequency = value!;
-                      if (afterRegistration &&
-                          _templateSchedule == null &&
-                          !choseDate) {
-                        nextDate = nextScheduledDate(_occurredAt, {
-                          'frequency': frequency,
-                          'anchorDay': _occurredAt.day,
-                          'anchorMonth': _occurredAt.month,
-                        });
-                      }
-                    }),
-                  ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Próxima fecha'),
-                    subtitle: Text(scheduledDate(nextDate)),
-                    trailing: const Icon(Icons.calendar_today),
-                    onTap: () async {
-                      final chosen = await showDatePicker(
-                        context: context,
-                        initialDate: nextDate,
-                        firstDate: DateTime(2000),
-                        lastDate: DateTime(2100),
-                      );
-                      if (chosen != null && context.mounted) {
-                        update(() {
-                          nextDate = chosen;
-                          choseDate = true;
-                        });
-                      }
-                    },
-                  ),
-                  PaymentReminderFields(
-                    value: reminderSettings,
-                    onChanged: (v) => update(() => reminderSettings = v),
-                  ),
-                ],
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: name.trim().isEmpty
-                  ? null
-                  : () => Navigator.pop(context, true),
-              child: const Text('Guardar'),
-            ),
-          ],
-        ),
-      ),
+    final choice = await showSaveTemplateDialog(
+      context,
+      name: name,
+      includeAmount: includeAmount,
+      automatic: automatic,
+      frequency: frequency,
+      nextDate: nextDate,
+      reminders: reminderSettings,
+      nextDateForFrequency: afterRegistration && _templateSchedule == null
+          ? (value) => nextScheduledDate(_occurredAt, {
+              'frequency': value,
+              'anchorDay': _occurredAt.day,
+              'anchorMonth': _occurredAt.month,
+            })
+          : null,
     );
-    if (accepted != true || !mounted) return null;
+    if (choice == null || !mounted) return null;
+    name = choice.name;
+    includeAmount = choice.includeAmount;
+    automatic = choice.automatic;
+    frequency = choice.frequency;
+    nextDate = choice.nextDate;
+    reminderSettings = choice.reminders;
+    final choseDate = choice.choseDate;
     try {
       final amount = includeAmount
           ? Money.parse(_amount.text).minorUnits
@@ -1017,74 +892,22 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
       if (aMatches != bMatches) return aMatches ? -1 : 1;
       return a.name.toLowerCase().compareTo(b.name.toLowerCase());
     });
-    final selected = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => SafeArea(
-        child: SizedBox(
-          height: MediaQuery.sizeOf(context).height * .6,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.all(16),
-                child: Text(
-                  'Usar plantilla',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-              ),
-              Expanded(
-                child: templates.isEmpty
-                    ? const Center(
-                        child: Text('Todavía no guardaste plantillas.'),
-                      )
-                    : ListView(
-                        children: [
-                          for (final template in templates)
-                            ListTile(
-                              title: Text(template.name),
-                              subtitle: Text(
-                                '${templateMovementLabel(template)} · ${templateScheduleLabel(context, template)}',
-                              ),
-                              trailing: const Icon(Icons.chevron_right),
-                              onTap: () => Navigator.pop(context, template.id),
-                            ),
-                        ],
-                      ),
-              ),
-              if (!(_payLater && _type == TransactionType.expense))
-                TextButton.icon(
-                  onPressed: () => Navigator.pop(context, '__save__'),
-                  icon: Icon(
-                    _alsoSaveTemplate
-                        ? Icons.bookmark_remove
-                        : Icons.bookmark_add,
-                  ),
-                  label: Text(
-                    _alsoSaveTemplate
-                        ? 'No guardar como plantilla'
-                        : 'Guardar como plantilla',
-                  ),
-                ),
-              TextButton.icon(
-                onPressed: () => Navigator.pop(context, '__manage__'),
-                icon: const Icon(Icons.tune),
-                label: const Text(
-                  'Administrar plantillas y registros programados',
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    final selected = await showTemplatePicker(
+      context,
+      templates: templates,
+      offerSave: !(_payLater && _type == TransactionType.expense),
+      saving: _alsoSaveTemplate,
     );
     if (selected == null || !mounted) return;
-    if (selected == '__save__') {
-      setState(() => _alsoSaveTemplate = !_alsoSaveTemplate);
-      return;
-    }
-    if (selected == '__manage__') {
-      context.push('/templates');
-      return;
+    switch (selected) {
+      case ToggleSaveAsTemplate():
+        setState(() => _alsoSaveTemplate = !_alsoSaveTemplate);
+        return;
+      case ManageTemplates():
+        context.push('/templates');
+        return;
+      case UseTemplate():
+        break;
     }
     for (final split in _splits) {
       split.dispose();
@@ -1097,7 +920,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
       _occurredAt = DateTime.now();
       _firstInstallmentDate = null;
     });
-    await _loadSavedTemplate(selected);
+    await _loadSavedTemplate(selected.id);
   }
 
   bool get _needsFrom =>
@@ -1425,28 +1248,12 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     }
   }
 
-  Future<void> _createCategory(List<CategoryRecord> categories) async {
-    final controller = TextEditingController();
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Nueva categoría'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Nombre'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancelar'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Crear'),
-          ),
-        ],
-      ),
+  Future<void> _createCategory() async {
+    final value = await showTextPrompt(
+      context,
+      title: 'Nueva categoría',
+      label: 'Nombre',
+      confirmLabel: 'Crear',
     );
     if (value == null || !mounted) return;
     try {
@@ -1627,6 +1434,50 @@ final class _AccountField extends StatelessWidget {
         (account) => account.id != excludedId,
       ))
         DropdownMenuItem(value: account.id, child: Text(account.name)),
+    ],
+    onChanged: onChanged,
+  );
+}
+
+final class _CategoryDropdown extends StatelessWidget {
+  const _CategoryDropdown({
+    required this.identity,
+    required this.categories,
+    required this.value,
+    required this.onChanged,
+    this.onCreate,
+    this.expanded = false,
+  });
+
+  /// Cambia cuando debe reconstruirse el campo con otro valor inicial.
+  final Object identity;
+  final List<CategoryRecord> categories;
+  final String? value;
+  final ValueChanged<String?> onChanged;
+  final VoidCallback? onCreate;
+  final bool expanded;
+
+  @override
+  Widget build(BuildContext context) => DropdownButtonFormField<String>(
+    key: ValueKey((identity, categories.map((row) => row.id).join(','))),
+    isExpanded: expanded,
+    initialValue: categories.any((row) => row.id == value) ? value : null,
+    decoration: InputDecoration(
+      labelText: 'Categoría',
+      suffixIcon: onCreate == null
+          ? null
+          : IconButton(
+              tooltip: 'Crear categoría',
+              onPressed: onCreate,
+              icon: const Icon(Icons.add),
+            ),
+    ),
+    items: [
+      for (final category in categories)
+        DropdownMenuItem(
+          value: category.id,
+          child: Text(category.name, overflow: TextOverflow.ellipsis),
+        ),
     ],
     onChanged: onChanged,
   );
