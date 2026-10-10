@@ -74,3 +74,14 @@ Más → Herramientas de desarrollo → Notificaciones de prueba. La lista inici
 «Enviar notificación de prueba» exige acceso al lector y permiso para mostrar notificaciones. Android muestra una notificación de esta app, marcada PRUEBA, durante hasta un minuto; no suplanta a Google Wallet. El lector la captura con metadatos de prueba y el mismo reconocimiento. Con la app visible, el lector avisa de la captura y la procesa; también se puede volver a la app o actualizar Movimientos pendientes. El acceso a la bandeja en Inicio muestra el contador de propuestas; la pestaña Inicio muestra solo un punto. Las transacciones tienen fuente `developerTest` y descripción `[PRUEBA]`; afectan los saldos y enseñan asociaciones en esta instalación. La primera compra con asociaciones nuevas requiere confirmación; si se activa el registro automático, compras siguientes reconocidas pueden registrarse solas.
 
 Wallet real no necesita la bandera; inspeccionar notificaciones existentes y repetir una compra eliminada siguen siendo herramientas de desarrollo.
+
+## Comprobación de las barreras
+
+Comprobación estática del 2026-10-10 sobre `app-profile.apk` y `app-debug.apk` en modo «uso normal» (`config/production.json`), con `dexdump` y `strings`, sin compilar ni instalar nada nuevo:
+
+- `BuildConfig` de profile: `BUILD_TYPE=profile`, `DEVELOPER_TOOLS_ENABLED=false`. De debug en uso normal: `DEVELOPER_TOOLS_ENABLED=false`.
+- `app/build.gradle.kts`: el valor por defecto es `false`; solo el tipo `debug` lo toma de `--dart-define`, y release lo hereda en `false`.
+- Dart: `developerToolsEnabled = kDebugMode && fromEnvironment(...)` es una constante falsa en profile y release. En el `libapp.so` de profile no aparecen las pantallas ni las rutas de simulador, diagnóstico o inspector; solo permanece la clave `sms_notifications_enabled`, que la app fuerza a `false`.
+- Pruebas de host: `test/features/developer_tools/developer_tools_test.dart`.
+
+No sustituye el recorrido en el teléfono con un profile o release instalado, ni cubre el listener real.

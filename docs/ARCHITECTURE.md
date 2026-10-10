@@ -1,6 +1,6 @@
 # Arquitectura
 
-Referencia de implementación inspeccionada al 2026-10-07. Las decisiones de producto están en [PRODUCT_BASELINE](PRODUCT_BASELINE.md), los estados y brechas en [ROADMAP](ROADMAP.md).
+Referencia de la implementación al 2026-10-10. Las decisiones de producto están en [PRODUCT_BASELINE](PRODUCT_BASELINE.md), los estados y brechas en [ROADMAP](ROADMAP.md).
 
 ## Componentes y recorridos
 
@@ -18,7 +18,7 @@ Ciclo de vida Flutter / captura visible → procesar cola → procesar programad
 
 El formulario de movimiento sigue Vista → ViewModel → servicio: `TransactionFormScreen` dibuja `TransactionFormState` y reenvía lo que hace el usuario a `TransactionFormNotifier` (Riverpod); este aplica las reglas del estado y guarda mediante `TransactionFormService`. Los diálogos, selectores de fecha, permiso de avisos y navegación se resuelven en la vista. Las demás pantallas piden sus lecturas a los servicios y no consultan Drift; solo el formulario tiene ViewModel porque solo él acumula reglas de guardado y estado propio.
 
-`LedgerRepository.watchMovements` proyecta cuotas como filas mensuales enlazadas sin crear transacciones duplicadas. `ReportService` es la fuente de cálculo compartida por reportes y presupuestos, incluido el reparto entero de categorías (H01). La deuda utiliza la compra completa y los pagos siguen fuera del gasto.
+`LedgerRepository.watchMovements` proyecta cuotas como filas mensuales enlazadas sin crear transacciones duplicadas. `ReportService` es la fuente de cálculo compartida por reportes y presupuestos, incluido el reparto entero de categorías. La deuda utiliza la compra completa y los pagos siguen fuera del gasto.
 
 ## Directorios y evidencia
 
@@ -26,8 +26,7 @@ El formulario de movimiento sigue Vista → ViewModel → servicio: `Transaction
 - [Core](../lib/core): base, dinero, seguridad, backup y notificaciones.
 - [Features](../lib/features): pantallas/servicios financieros, plantillas y herramientas de desarrollo separadas.
 - [Android Kotlin](../android/app/src/main/kotlin/py/finanzaslocales/finanzas_locales): listener, cola, puente y `DeviceCrypto`.
-- [Pruebas](../test): evidencias limitadas al entorno ejecutado.
-- [Prototipo](../prototype/cabal): libro ficticio JS/localStorage; no conecta con Flutter ni prueba Android.
+- [Pruebas](../test): evidencias limitadas al entorno de host; Android se verifica a mano ([DEVELOPMENT](DEVELOPMENT.md)).
 
 ## Persistencia y recuperación
 

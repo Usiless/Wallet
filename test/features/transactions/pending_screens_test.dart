@@ -261,7 +261,7 @@ void main() {
     },
   );
   testWidgets(
-    'Filtros muestran cuotas parcialmente pagadas y canceladas como prototipo',
+    'Filtros muestran cuotas parcialmente pagadas y canceladas según el diseño aprobado',
     (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
