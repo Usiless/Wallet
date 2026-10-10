@@ -136,6 +136,18 @@ final pendingCandidatesProvider = StreamProvider<List<PaymentCandidateRecord>>((
   return ref.watch(notificationIngestionProvider).watchPending();
 });
 
+final creditCardProfileProvider = StreamProvider.autoDispose
+    .family<CreditCardProfileRecord?, String>(
+      (ref, accountId) =>
+          ref.watch(accountsServiceProvider).watchCreditCardProfile(accountId),
+    );
+
+final accountAliasesProvider = StreamProvider.autoDispose
+    .family<List<AccountAliasRecord>, String>(
+      (ref, accountId) =>
+          ref.watch(accountsServiceProvider).watchAliasesOf(accountId),
+    );
+
 final allAccountsProvider = StreamProvider<List<AccountRecord>>(
   (ref) =>
       ref.watch(accountsServiceProvider).watchAccounts(includeArchived: true),

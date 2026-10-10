@@ -176,20 +176,25 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
   }
 
   Widget _detail(AccountRecord account, int balance) {
-    final movements = ref
-        .watch(ledgerRepositoryProvider)
-        .watchMovements(
-          filter: (
-            search: '',
-            account: account.id,
-            merchant: null,
-            category: null,
-            type: null,
-            start: null,
-            end: null,
-          ),
-          limit: 4,
-        );
+    final movements = ref.watch(
+      movementHistoryProvider((
+        filter: (
+          search: '',
+          account: account.id,
+          merchant: null,
+          category: null,
+          type: null,
+          start: null,
+          end: null,
+        ),
+        limit: 4,
+        unclassified: false,
+        reportOnly: false,
+        withoutMerchant: false,
+      )),
+    );
+    final cardProfile = ref.watch(creditCardProfileProvider(account.id));
+    final aliases = ref.watch(accountAliasesProvider(account.id));
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -214,16 +219,16 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
           ),
         ),
         if (account.type == 'creditCard')
-          FutureBuilder<CreditCardProfileRecord?>(
-            future: ref
-                .read(accountsServiceProvider)
-                .creditCardProfile(account.id),
-            builder: (context, snapshot) {
-              if (snapshot.hasError) {
-                return Text('No se pudo cargar la tarjeta: ${snapshot.error}');
+          Builder(
+            builder: (context) {
+              if (cardProfile.hasError) {
+                return Text(
+                  'No se pudo cargar la tarjeta: ${cardProfile.error}',
+                );
               }
-              final profile = snapshot.data;
-              if (profile == null) return const LinearProgressIndicator();
+              if (!cardProfile.hasValue) return const LinearProgressIndicator();
+              final profile = cardProfile.value;
+              if (profile == null) return const SizedBox.shrink();
               final dates = const CreditCardCycleCalculator().nextDates(
                 localDate: DateTime.now(),
                 closingDay: profile.closingDay,
@@ -285,15 +290,12 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
               }
             },
           ),
-        FutureBuilder<List<AccountAliasRecord>>(
-          future: ref.read(accountsServiceProvider).aliasesOf(account.id),
-          builder: (context, snapshot) => ListTile(
-            title: const Text('Alias'),
-            subtitle: Text(
-              snapshot.hasError
-                  ? 'No se pudieron cargar'
-                  : snapshot.data?.map((a) => a.alias).join(', ') ?? '…',
-            ),
+        ListTile(
+          title: const Text('Alias'),
+          subtitle: Text(
+            aliases.hasError
+                ? 'No se pudieron cargar'
+                : aliases.value?.map((a) => a.alias).join(', ') ?? '…',
           ),
         ),
         Wrap(
@@ -322,19 +324,18 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         ),
         const SizedBox(height: 20),
         Text('Movimientos', style: Theme.of(context).textTheme.titleMedium),
-        StreamBuilder(
-          stream: movements,
-          builder: (context, snapshot) {
-            if (snapshot.hasError) {
-              return Text('No se pudieron cargar: ${snapshot.error}');
+        Builder(
+          builder: (context) {
+            if (movements.hasError) {
+              return Text('No se pudieron cargar: ${movements.error}');
             }
-            if (!snapshot.hasData) return const LinearProgressIndicator();
-            if (snapshot.data!.isEmpty) {
+            if (!movements.hasValue) return const LinearProgressIndicator();
+            if (movements.value!.isEmpty) {
               return const Text('Sin movimientos todavía.');
             }
             return Column(
               children: [
-                for (final row in snapshot.data!)
+                for (final row in movements.value!)
                   ListTile(
                     title: Text(
                       row.transaction.description.isEmpty

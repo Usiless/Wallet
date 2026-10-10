@@ -310,6 +310,16 @@ final class AccountsService {
         database.accountAliases,
       )..where((table) => table.accountId.equals(accountId))).get();
 
+  Stream<CreditCardProfileRecord?> watchCreditCardProfile(String accountId) =>
+      (database.select(database.creditCardProfiles)
+            ..where((table) => table.accountId.equals(accountId)))
+          .watchSingleOrNull();
+
+  Stream<List<AccountAliasRecord>> watchAliasesOf(String accountId) =>
+      (database.select(
+        database.accountAliases,
+      )..where((table) => table.accountId.equals(accountId))).watch();
+
   Stream<List<AccountAliasRecord>> watchAliases() =>
       database.select(database.accountAliases).watch();
 
