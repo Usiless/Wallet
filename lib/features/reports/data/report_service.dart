@@ -154,7 +154,6 @@ class ReportService {
             database.categories,
             database.merchants,
             database.accounts,
-            database.appSettings,
           },
         )
         .watch()
