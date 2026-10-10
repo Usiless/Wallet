@@ -214,24 +214,14 @@ final class _CandidateCard extends ConsumerWidget {
     final walletPurchase =
         row.source == 'googleWalletNotification' ||
         row.source == 'developerTest';
-    final merchants =
-        await (ref
-                .read(databaseProvider)
-                .select(ref.read(databaseProvider).merchants)
-              ..where((table) => table.isArchived.equals(false)))
-            .get();
+    final merchants = await ref.read(merchantServiceProvider).listMerchants();
     final matches = await ref
         .read(merchantServiceProvider)
         .matches(row.rawMerchant ?? '');
     String selectedMerchant = matches.length == 1
         ? matches.single.id
         : '__new__';
-    final categories =
-        await (ref
-                .read(databaseProvider)
-                .select(ref.read(databaseProvider).categories)
-              ..where((t) => t.isArchived.equals(false)))
-            .get();
+    final categories = await ref.read(categoryServiceProvider).list();
     final expenseCategories = categories
         .where((c) => c.kind != 'income')
         .toList();

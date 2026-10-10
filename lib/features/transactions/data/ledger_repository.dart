@@ -153,6 +153,25 @@ final class LedgerRepository {
         );
   }
 
+  Future<({InstallmentPlanRecord plan, List<InstallmentEntryRecord> entries})?>
+  installmentsOf(String transactionId) async {
+    final plan = await (database.select(
+      database.installmentPlans,
+    )..where((p) => p.transactionId.equals(transactionId))).getSingleOrNull();
+    if (plan == null) return null;
+    final entries =
+        await (database.select(database.installmentEntries)
+              ..where((e) => e.planId.equals(plan.id))
+              ..orderBy([(e) => OrderingTerm.asc(e.installmentNumber)]))
+            .get();
+    return (plan: plan, entries: entries);
+  }
+
+  Future<List<TransactionSplitRecord>> splitsOf(String transactionId) =>
+      (database.select(
+        database.transactionSplits,
+      )..where((s) => s.transactionId.equals(transactionId))).get();
+
   Stream<List<AccountBalance>> watchAccountBalances() {
     return database
         .customSelect(

@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:drift/drift.dart' show OrderingTerm;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
@@ -14,21 +13,17 @@ Future<void> showMovementDetail(
   WidgetRef ref,
   MovementRow movement,
 ) async {
-  final row = movement.transaction, db = ref.read(databaseProvider);
-  final plans = await (db.select(
-    db.installmentPlans,
-  )..where((p) => p.transactionId.equals(row.id))).get();
-  final entries = plans.isEmpty
-      ? <InstallmentEntryRecord>[]
-      : await (db.select(db.installmentEntries)
-              ..where((e) => e.planId.equals(plans.single.id))
-              ..orderBy([(e) => OrderingTerm.asc(e.installmentNumber)]))
-            .get();
-  final accountRowsFuture = db.select(db.accounts).get();
-  final categoriesFuture = db.select(db.categories).get();
-  final splitsFuture = (db.select(
-    db.transactionSplits,
-  )..where((split) => split.transactionId.equals(row.id))).get();
+  final row = movement.transaction;
+  final ledger = ref.read(ledgerRepositoryProvider);
+  final installments = await ledger.installmentsOf(row.id);
+  final entries = installments?.entries ?? const <InstallmentEntryRecord>[];
+  final accountRowsFuture = ref
+      .read(accountsServiceProvider)
+      .getAccounts(includeArchived: true);
+  final categoriesFuture = ref
+      .read(categoryServiceProvider)
+      .list(includeArchived: true);
+  final splitsFuture = ledger.splitsOf(row.id);
   final accountRows = await accountRowsFuture;
   final categories = await categoriesFuture;
   final splits = await splitsFuture;
@@ -103,7 +98,7 @@ Future<void> showMovementDetail(
               for (final entry in entries)
                 ListTile(
                   title: Text(
-                    'Cuota ${entry.installmentNumber}/${plans.single.installmentCount}',
+                    'Cuota ${entry.installmentNumber}/${installments!.plan.installmentCount}',
                   ),
                   subtitle: Text(
                     MaterialLocalizations.of(sheet)

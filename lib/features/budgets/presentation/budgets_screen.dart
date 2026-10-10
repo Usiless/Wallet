@@ -349,12 +349,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
       ...ref.read(categoriesProvider).value ?? const <CategoryRecord>[],
     ];
     if (category != null && !categories.any((c) => c.id == category)) {
-      final old =
-          await (ref
-                  .read(databaseProvider)
-                  .select(ref.read(databaseProvider).categories)
-                ..where((c) => c.id.equals(category!)))
-              .getSingleOrNull();
+      final old = await ref.read(categoryServiceProvider).find(category);
       if (old != null) categories.add(old);
     }
     if (!mounted) return;

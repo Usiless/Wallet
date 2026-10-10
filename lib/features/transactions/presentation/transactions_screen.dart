@@ -214,10 +214,15 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
   }
 
   Future<void> _filters() async {
-    final db = ref.read(databaseProvider);
-    final accounts = await db.select(db.accounts).get();
-    final merchants = await db.select(db.merchants).get();
-    final categories = await db.select(db.categories).get();
+    final accounts = await ref
+        .read(accountsServiceProvider)
+        .getAccounts(includeArchived: true);
+    final merchants = await ref
+        .read(merchantServiceProvider)
+        .listMerchants(includeArchived: true);
+    final categories = await ref
+        .read(categoryServiceProvider)
+        .list(includeArchived: true);
     if (!mounted) return;
     String? account = _filter.account,
         merchant = _filter.merchant,

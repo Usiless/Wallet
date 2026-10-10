@@ -58,12 +58,9 @@ final merchantServiceProvider = Provider(
 final merchantsProvider = StreamProvider<List<MerchantRecord>>(
   (ref) => ref.watch(merchantServiceProvider).watchMerchants(),
 );
-final merchantAliasesProvider = StreamProvider<List<MerchantAliasRecord>>((
-  ref,
-) {
-  final database = ref.watch(databaseProvider);
-  return database.select(database.merchantAliases).watch();
-});
+final merchantAliasesProvider = StreamProvider<List<MerchantAliasRecord>>(
+  (ref) => ref.watch(merchantServiceProvider).watchAliases(),
+);
 final ledgerServiceProvider = Provider(
   (ref) => LedgerService(ref.watch(databaseProvider)),
 );

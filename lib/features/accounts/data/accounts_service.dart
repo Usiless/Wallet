@@ -288,11 +288,34 @@ final class AccountsService {
     return query.watch();
   }
 
-  Future<List<AccountRecord>> getAccounts() =>
-      (database.select(database.accounts)
-            ..where((table) => table.isArchived.equals(false))
-            ..orderBy([(table) => OrderingTerm.asc(table.sortOrder)]))
-          .get();
+  Future<List<AccountRecord>> getAccounts({bool includeArchived = false}) {
+    final query = database.select(database.accounts);
+    if (!includeArchived) {
+      query.where((table) => table.isArchived.equals(false));
+    }
+    query.orderBy([
+      (table) => OrderingTerm.asc(table.sortOrder),
+      (table) => OrderingTerm.asc(table.createdAt),
+    ]);
+    return query.get();
+  }
+
+  Future<CreditCardProfileRecord?> creditCardProfile(String accountId) =>
+      (database.select(
+        database.creditCardProfiles,
+      )..where((table) => table.accountId.equals(accountId))).getSingleOrNull();
+
+  Future<List<AccountAliasRecord>> aliasesOf(String accountId) =>
+      (database.select(
+        database.accountAliases,
+      )..where((table) => table.accountId.equals(accountId))).get();
+
+  Stream<List<AccountAliasRecord>> watchAliases() =>
+      database.select(database.accountAliases).watch();
+
+  Future<void> removeAlias(String aliasId) => (database.delete(
+    database.accountAliases,
+  )..where((table) => table.id.equals(aliasId))).go();
 
   Future<AccountRecord?> findByNameOrAlias(String value) async {
     final normalized = normalizeForMatching(value);

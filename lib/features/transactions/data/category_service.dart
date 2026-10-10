@@ -26,6 +26,22 @@ final class CategoryService {
     return query.watch();
   }
 
+  Future<List<CategoryRecord>> list({bool includeArchived = false}) {
+    final query = database.select(database.categories);
+    if (!includeArchived) {
+      query.where((table) => table.isArchived.equals(false));
+    }
+    query.orderBy([
+      (table) => OrderingTerm.asc(table.sortOrder),
+      (table) => OrderingTerm.asc(table.createdAt),
+    ]);
+    return query.get();
+  }
+
+  Future<CategoryRecord?> find(String id) => (database.select(
+    database.categories,
+  )..where((table) => table.id.equals(id))).getSingleOrNull();
+
   Future<void> rename(String id, String name) async {
     final clean = name.trim();
     if (clean.isEmpty || clean.length > 80) {

@@ -8,12 +8,17 @@ import '../../shared/widgets/app_fab.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
-    final db = ref.watch(databaseProvider);
     return switch (kind) {
-      'merchants' => db.select(db.merchants).watch(),
-      'categories' => db.select(db.categories).watch(),
-      'accountAliases' => db.select(db.accountAliases).watch(),
-      _ => db.select(db.merchantAliases).watch(),
+      'merchants' =>
+        ref
+            .watch(merchantServiceProvider)
+            .watchMerchants(includeArchived: true),
+      'categories' =>
+        ref
+            .watch(categoryServiceProvider)
+            .watchCategories(includeArchived: true),
+      'accountAliases' => ref.watch(accountsServiceProvider).watchAliases(),
+      _ => ref.watch(merchantServiceProvider).watchAliases(),
     };
   },
 );
@@ -206,10 +211,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
   Future<String?> _target(bool account) async {
     final choices = account
         ? await ref.read(accountsServiceProvider).getAccounts()
-        : await ref
-              .read(databaseProvider)
-              .select(ref.read(databaseProvider).merchants)
-              .get();
+        : await ref.read(merchantServiceProvider).listMerchants();
     if (!mounted) return null;
     return showDialog<String>(
       context: context,
@@ -237,7 +239,6 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
 
   Future<void> _action(Object row, String action) async {
     try {
-      final db = ref.read(databaseProvider);
       if (action == 'archive') {
         if (row is MerchantRecord) {
           await ref
@@ -251,14 +252,10 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
         }
       } else if (action == 'delete') {
         if (row is AccountAliasRecord) {
-          await (db.delete(
-            db.accountAliases,
-          )..where((t) => t.id.equals(row.id))).go();
+          await ref.read(accountsServiceProvider).removeAlias(row.id);
         }
         if (row is MerchantAliasRecord) {
-          await (db.delete(
-            db.merchantAliases,
-          )..where((t) => t.id.equals(row.id))).go();
+          await ref.read(merchantServiceProvider).removeAlias(row.id);
         }
       } else if (row is AccountAliasRecord || row is MerchantAliasRecord) {
         final target = await _target(row is AccountAliasRecord);
