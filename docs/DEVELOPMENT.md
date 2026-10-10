@@ -57,7 +57,7 @@ Los recursos de marca se regeneran manualmente con `python3 tool/generate_launch
 
 ## Verificación Android pendiente
 
-Estado 2026-10-10: pasos 1–3 y 6 (V01 y V02) verificados por el usuario sin incidencias. Recordatorios del traslado final (pasos 1–5) verificados por el usuario el mismo día. Wallet real: comercio nuevo y compra repetida verificados. Pendientes: Wallet ambiguo, notificación actualizada, coincidencia con programado y paso 7 (barreras profile/release).
+Estado 2026-10-10: pasos 1–3 y 6 (V01 y V02) verificados por el usuario sin incidencias. Recordatorios del traslado final (pasos 1–5) verificados por el usuario el mismo día. Wallet real: comercio nuevo y compra repetida verificados. Barreras de herramientas de desarrollo: comprobadas en binarios sin instalar (ver «Barreras» más abajo). Pendientes: Wallet ambiguo, notificación actualizada y coincidencia con programado.
 
 Usar una instalación de prueba y datos descartables. El APK lo prepara el usuario. Registrar versión, modo, dispositivo/API, pasos, esperado/observado y evidencia sanitizada; no copiar notificaciones personales a la documentación.
 
@@ -107,3 +107,14 @@ Sin generar APK desde el asistente. Una vez que el usuario instale su compilaci�
 ## APK solicitado expresamente · 2026-10-08/09
 
 La prohibición de compilar automáticamente sigue vigente. Para esta entrega el usuario pidió explícitamente el APK; se utiliza `flutter build apk --profile --no-pub --dart-define=ENABLE_DEVELOPER_TOOLS=false`. Profile usa AOT y la firma debug existente sin configurar ni compartir una clave release privada. El APK final se encuentra en `build/app/outputs/flutter-apk/app-profile.apk`; confirmar resultados/hash/firma en [el informe](evaluation/flutter-port-2026-10-07/REPORT.md). No se instaló ni se borraron datos del teléfono. Compilar no marca los recorridos Android anteriores como ejecutados.
+
+## Barreras de herramientas de desarrollo · comprobación estática de binarios · 2026-10-10
+
+Sin compilar ni instalar nada: se inspeccionaron `app-profile.apk` (2026-10-09) y `app-debug.apk` en modo «uso normal» (`config/production.json`, 2026-10-10) con `dexdump` y `strings`.
+
+- `BuildConfig` de profile: `BUILD_TYPE=profile`, `DEVELOPER_TOOLS_ENABLED=false`. De debug en uso normal: `DEVELOPER_TOOLS_ENABLED=false`.
+- `app/build.gradle.kts`: el valor por defecto es `false` y solo el tipo `debug` lo toma de `--dart-define`; release hereda `false`.
+- Dart: `developerToolsEnabled = kDebugMode && fromEnvironment(...)` es constante falsa en profile/release. En `libapp.so` de profile no aparecen pantallas ni rutas de simulador, diagnóstico o inspector; solo permanece la clave `sms_notifications_enabled`, que la app fuerza a `false`.
+- Pruebas de host de las barreras: `test/features/developer_tools/developer_tools_test.dart`.
+
+No sustituye el recorrido en teléfono con profile/release: un binario release no se ha compilado ni instalado, y esta comprobación no cubre el listener real ni el comportamiento en ejecución.
