@@ -10,6 +10,7 @@ import '../../../shared/widgets/money_text.dart';
 import '../domain/budget_service.dart';
 import '../../../shared/widgets/app_fab.dart';
 import 'budget_ring.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 final class BudgetsScreen extends ConsumerStatefulWidget {
   const BudgetsScreen({this.navigation, super.key});
@@ -324,10 +325,9 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
         repeatMonthly = await service.repeatsMonthly(budget);
       } catch (_) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('No se pudo abrir la plantilla del presupuesto.'),
-            ),
+          showMessage(
+            context,
+            'No se pudo abrir la plantilla del presupuesto.',
           );
         }
         return;

@@ -47,40 +47,56 @@ final class PendingPaymentService {
         ..sort((a, b) => a.dueDate.compareTo(b.dueDate));
   Future<List<PendingPayment>> list() async {
     final rows = await _rawList();
-    for (final p in rows) {
-      await _hydrate(p);
-    }
+    await _hydrateAll(rows);
     return rows;
   }
 
-  Future<void> _hydrate(PendingPayment p) async {
-    final active = <Map<String, dynamic>>[];
-    for (final payment in p.payments) {
-      final tx =
-          await (database.select(database.ledgerTransactions)
-                ..where((t) => t.id.equals(payment['transactionId'] as String)))
-              .getSingleOrNull();
-      if (tx != null && tx.status != 'deleted' && tx.status != 'reversed') {
-        final splits = await (database.select(
-          database.transactionSplits,
-        )..where((s) => s.transactionId.equals(tx.id))).get();
-        active.add({
-          ...payment,
-          'amountMinor': tx.amountMinor,
-          'paidAt': tx.occurredAt.toIso8601String(),
-          'accountId': tx.fromAccountId,
-          'splits': [
-            for (final s in splits)
-              {'categoryId': s.categoryId, 'amountMinor': s.amountMinor},
-          ],
-        });
+  Future<void> _hydrate(PendingPayment p) => _hydrateAll([p]);
+
+  Future<void> _hydrateAll(List<PendingPayment> pending) async {
+    final ids = {
+      for (final p in pending)
+        for (final payment in p.payments) payment['transactionId'] as String,
+    };
+    final transactions = <String, TransactionRecord>{};
+    final splits = <String, List<TransactionSplitRecord>>{};
+    if (ids.isNotEmpty) {
+      for (final tx
+          in await (database.select(
+            database.ledgerTransactions,
+          )..where((t) => t.id.isIn(ids))).get()) {
+        transactions[tx.id] = tx;
+      }
+      for (final split
+          in await (database.select(
+            database.transactionSplits,
+          )..where((s) => s.transactionId.isIn(ids))).get()) {
+        (splits[split.transactionId] ??= []).add(split);
       }
     }
-    p.effectivePayments = active;
-    p.effectivePaidMinor = active.fold<int>(
-      0,
-      (n, p) => n + (p['amountMinor'] as int),
-    );
+    for (final p in pending) {
+      final active = <Map<String, dynamic>>[];
+      for (final payment in p.payments) {
+        final tx = transactions[payment['transactionId'] as String];
+        if (tx != null && tx.status != 'deleted' && tx.status != 'reversed') {
+          active.add({
+            ...payment,
+            'amountMinor': tx.amountMinor,
+            'paidAt': tx.occurredAt.toIso8601String(),
+            'accountId': tx.fromAccountId,
+            'splits': [
+              for (final s in splits[tx.id] ?? const <TransactionSplitRecord>[])
+                {'categoryId': s.categoryId, 'amountMinor': s.amountMinor},
+            ],
+          });
+        }
+      }
+      p.effectivePayments = active;
+      p.effectivePaidMinor = active.fold<int>(
+        0,
+        (n, e) => n + (e['amountMinor'] as int),
+      );
+    }
   }
 
   Future<PendingPayment?> read(String id) async {

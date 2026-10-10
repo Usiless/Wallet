@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/config/feature_flags.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 final class WalletSettingsScreen extends ConsumerStatefulWidget {
   const WalletSettingsScreen({super.key});
@@ -44,11 +45,7 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
       await ref.read(nativeNotificationBridgeProvider).openAccessSettings();
     } catch (_) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('No se pudieron abrir los ajustes de Android.'),
-          ),
-        );
+        showMessage(context, 'No se pudieron abrir los ajustes de Android.');
       }
     }
   }
@@ -59,12 +56,9 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
       final bridge = ref.read(nativeNotificationBridgeProvider);
       if (enabled && !await bridge.isAccessGranted()) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Concedé acceso en Android y volvé a activar la detección.',
-              ),
-            ),
+          showMessage(
+            context,
+            'Concedé acceso en Android y volvé a activar la detección.',
           );
         }
         await bridge.openAccessSettings();
@@ -95,10 +89,7 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
         });
       }
     } catch (error) {
-      if (mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (mounted) showError(context, error);
     } finally {
       if (mounted) setState(() => _busy = false);
     }

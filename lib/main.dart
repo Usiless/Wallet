@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -11,7 +13,6 @@ import 'features/onboarding/data/onboarding_service.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await cleanupBackupWorkingFiles();
   final database = AppDatabase();
   final settings = SettingsRepository(database);
   final onboarding = OnboardingService(
@@ -20,6 +21,9 @@ Future<void> main() async {
     settings,
   );
   await onboarding.ensureSystemData();
+  WidgetsBinding.instance.addPostFrameCallback(
+    (_) => unawaited(cleanupBackupWorkingFiles().catchError((Object _) {})),
+  );
   runApp(
     ProviderScope(
       overrides: [databaseProvider.overrideWithValue(database)],

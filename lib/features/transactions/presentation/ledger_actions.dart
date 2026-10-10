@@ -5,6 +5,7 @@ import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 Future<void> showRefundDialog(
   BuildContext context,
@@ -82,15 +83,9 @@ Future<void> showRefundDialog(
       occurredAt: date,
       note: note.text,
     );
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Devolución registrada.')));
-    }
+    if (context.mounted) showMessage(context, 'Devolución registrada.');
   } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-    }
+    if (context.mounted) showError(context, e);
   } finally {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     amount.dispose();
@@ -171,14 +166,9 @@ Future<void> showReconcileDialog(
       expectedBalance: current,
       note: note.text,
     );
-    if (context.mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Saldo conciliado.')));
-    }
+    if (context.mounted) showMessage(context, 'Saldo conciliado.');
   } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$e')));
-    }
+    if (context.mounted) showError(context, e);
   } finally {
     await Future<void>.delayed(const Duration(milliseconds: 300));
     target.dispose();

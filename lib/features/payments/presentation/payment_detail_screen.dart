@@ -7,6 +7,7 @@ import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../domain/pending_payment_models.dart';
 import 'payment_reminder_fields.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
   const PaymentDetailScreen({required this.paymentId, super.key});
@@ -36,10 +37,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   }
 
   void _message(Object error) {
-    if (mounted) {
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('$error')));
-    }
+    if (context.mounted) showError(context, error);
   }
 
   Future<void> _run(Future<void> Function() action) async {

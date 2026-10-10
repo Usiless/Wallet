@@ -7,6 +7,7 @@ import '../../shared/widgets/async_value_view.dart';
 import 'manual_template_service.dart';
 import 'template_summary.dart';
 import '../../shared/widgets/app_fab.dart';
+import '../../shared/widgets/app_snack.dart';
 
 final class TemplatesScreen extends ConsumerStatefulWidget {
   const TemplatesScreen({this.scheduledOnly = false, super.key});
@@ -154,10 +155,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
                     id: template.id,
                   );
                 } catch (error) {
-                  if (context.mounted) {
-                    ScaffoldMessenger.of(context)
-                        .showSnackBar(SnackBar(content: Text('$error')));
-                  }
+                  if (context.mounted) showError(context, error);
                 }
               },
             ),
@@ -165,10 +163,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
         );
       }
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 
@@ -186,10 +181,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
         await service.pause(id);
       }
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 }

@@ -13,8 +13,12 @@ final class OnboardingService {
   final SettingsRepository settings;
 
   Future<void> ensureSystemData() async {
-    final count = (await database.select(database.categories).get()).length;
-    if (count > 0) return;
+    final count = database.categories.id.count();
+    final exists =
+        await (database.selectOnly(database.categories)..addColumns([count]))
+            .map((row) => row.read(count)!)
+            .getSingle();
+    if (exists > 0) return;
     final now = DateTime.now().toUtc();
     const defaults = [
       ('sys-food', 'Alimentación', 'expense', 'restaurant', 0xFFB85C38),

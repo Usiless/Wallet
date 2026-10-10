@@ -9,6 +9,7 @@ import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/money_text.dart';
 import '../../accounts/presentation/create_account_dialog.dart';
 import 'candidate_review_dialog.dart';
+import '../../../shared/widgets/app_snack.dart';
 
 final class PendingInboxScreen extends ConsumerWidget {
   const PendingInboxScreen({super.key});
@@ -52,10 +53,7 @@ final class PendingInboxScreen extends ConsumerWidget {
                       .acknowledge(event);
                 }
               } catch (error) {
-                if (context.mounted) {
-                  ScaffoldMessenger.of(context)
-                      .showSnackBar(SnackBar(content: Text('$error')));
-                }
+                if (context.mounted) showError(context, error);
               }
             },
           ),
@@ -193,10 +191,7 @@ final class _CandidateCard extends ConsumerWidget {
         await ref.read(accountsServiceProvider).createAccount(draft);
         available = await ref.read(accountsServiceProvider).getAccounts();
       } catch (error) {
-        if (context.mounted) {
-          ScaffoldMessenger.of(context)
-              .showSnackBar(SnackBar(content: Text('$error')));
-        }
+        if (context.mounted) showError(context, error);
         return;
       }
       if (!context.mounted) return;
@@ -259,15 +254,9 @@ final class _CandidateCard extends ConsumerWidget {
             categoryId: walletPurchase ? review.categoryId : null,
             rememberCategory: walletPurchase,
           );
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(const SnackBar(content: Text('Compra confirmada.')));
-      }
+      if (context.mounted) showMessage(context, 'Compra confirmada.');
     } catch (error) {
-      if (context.mounted) {
-        ScaffoldMessenger.of(context)
-            .showSnackBar(SnackBar(content: Text('$error')));
-      }
+      if (context.mounted) showError(context, error);
     }
   }
 
