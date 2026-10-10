@@ -198,8 +198,8 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
         ],
       ),
     );
-    await Future<void>.delayed(Duration.zero);
-    controller.dispose();
+    // El diálogo aún se anima al cerrarse: liberar el controlador después.
+    Future<void>.delayed(const Duration(milliseconds: 300), controller.dispose);
     return result;
   }
 
