@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../../payments/domain/pending_payment_models.dart';
 import '../../templates/manual_template_service.dart';
 import '../data/transaction_form_service.dart';
@@ -53,6 +54,12 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
       to: args.toAccountId,
       loading: loadsSomething,
     );
+  }
+
+  /// Vuelve a intentar la carga inicial que falló.
+  Future<void> retryLoad() {
+    state = state.copyWith(loading: true, loadError: null);
+    return _start();
   }
 
   Future<void> _start() async {
@@ -328,7 +335,7 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
       if (!ref.mounted) return;
       state = state.withMovement(source);
     } catch (error) {
-      if (ref.mounted) state = state.copyWith(loadError: '$error');
+      if (ref.mounted) state = state.copyWith(loadError: userMessage(error));
     } finally {
       if (ref.mounted) {
         state = state.copyWith(loading: false);
@@ -350,7 +357,7 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
       if (!ref.mounted) return;
       state = state.withTemplate(template, linked, markClean: markClean);
     } catch (error) {
-      if (ref.mounted) state = state.copyWith(loadError: '$error');
+      if (ref.mounted) state = state.copyWith(loadError: userMessage(error));
     } finally {
       if (ref.mounted) {
         state = state.copyWith(loading: false);

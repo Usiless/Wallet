@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:intl/intl.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/money/money.dart';
@@ -134,7 +135,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
           const SizedBox(height: 16),
           ...analysis.when(
             loading: () => [const LinearProgressIndicator()],
-            error: (e, _) => [Text('No se pudo calcular el reporte: $e')],
+            error: (_, _) => [const Text('No se pudo calcular el reporte.')],
             data: (a) => switch (_view) {
               1 => _evolution(a),
               2 => _ranking(
@@ -184,7 +185,11 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
           ],
         ),
         _summaryRow('Ingresos', a.totals.income, a.previous.income),
-        _summaryRow('Gastos', a.totals.netExpenses, a.previous.netExpenses),
+        _summaryRow(
+          'Gastos netos',
+          a.totals.netExpenses,
+          a.previous.netExpenses,
+        ),
         TableRow(
           children: [
             Padding(
@@ -232,7 +237,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
     if (a.unclassifiedAmount > 0)
       TextButton(
         onPressed: () => _details('unclassified', null),
-        child: Text('${a.unclassifiedCount} compras sin categoría'),
+        child: Text('${_purchases(a.unclassifiedCount)} sin categoría'),
       ),
   ];
   TableRow _summaryRow(String label, int amount, int previous) {
@@ -406,7 +411,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                     MoneyText(row.totals.expenses),
                     if (total > 0)
                       Text(
-                        '${(row.totals.expenses * 100 / total).toStringAsFixed(1)} % del gasto',
+                        '${_percent(row.totals.expenses * 100 / total)} del gasto',
                       ),
                   ],
                 ),
@@ -419,7 +424,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
                   borderRadius: BorderRadius.circular(6),
                 ),
                 const SizedBox(height: 8),
-                Text('${row.expenseCount} compras'),
+                Text(_purchases(row.expenseCount)),
                 if (row.totals.refunds > 0) ...[
                   const SizedBox(height: 12),
                   _amountRow('Devoluciones', row.totals.refunds),
@@ -436,6 +441,10 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
         ),
       ),
   ];
+  static String _purchases(int count) =>
+      count == 1 ? '1 compra' : '$count compras';
+  static String _percent(double value) =>
+      '${NumberFormat.decimalPatternDigits(locale: 'es_PY', decimalDigits: 1).format(value)} %';
   Widget _heading(String text) => Padding(
     padding: const EdgeInsets.only(bottom: 12),
     child: Text(text, style: Theme.of(context).textTheme.titleLarge),

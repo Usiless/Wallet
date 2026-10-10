@@ -1,6 +1,7 @@
 import 'package:drift/drift.dart';
 
 import '../../core/database/app_database.dart';
+import '../../core/errors/user_message.dart';
 import '../../core/text/normalization.dart';
 import '../merchants/merchant_service.dart';
 import '../transactions/domain/ledger_models.dart';
@@ -284,11 +285,7 @@ final class ScheduledTemplateService {
             );
             return 'next';
           } catch (error) {
-            schedule['pendingReason'] = error is StateError
-                ? error.message
-                : error is FormatException
-                ? error.message
-                : '$error';
+            schedule['pendingReason'] = userMessage(error);
             fields['schedule'] = schedule;
             await templates.save(
               template.name,

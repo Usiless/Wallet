@@ -196,6 +196,8 @@ void main() {
     await pickKind(tester, 'Alias de cuentas');
 
     await choose(tester, '1234', 'Eliminar alias');
+    await tester.tap(find.widgetWithText(FilledButton, 'Eliminar'));
+    await settle(tester);
 
     expect(
       await tester.runAsync(() => db.select(db.accountAliases).get()),

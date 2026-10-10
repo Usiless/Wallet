@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../data/ledger_repository.dart';
 import 'ledger_actions.dart';
 import '../../../shared/widgets/money_text.dart';
@@ -72,6 +73,7 @@ Future<void> showMovementDetail(
             MoneyText(
               movement.amountMinor,
               style: Theme.of(sheet).textTheme.headlineMedium,
+              fitWidth: true,
             ),
             Text(
               '${MaterialLocalizations.of(sheet).formatShortDate(movement.occurredAt)}${movement.planned ? ' · Prevista' : ''}',
@@ -178,7 +180,7 @@ Future<void> showMovementDetail(
                 } catch (e) {
                   if (sheet.mounted) {
                     ScaffoldMessenger.of(sheet)
-                        .showSnackBar(SnackBar(content: Text('$e')));
+                        .showSnackBar(SnackBar(content: Text(userMessage(e))));
                   }
                 }
               },

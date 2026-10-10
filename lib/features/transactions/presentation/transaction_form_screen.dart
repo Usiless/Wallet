@@ -5,8 +5,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
-import '../../../core/money/money.dart';
-import '../../../core/money/pyg_input_formatter.dart';
+import '../../../core/errors/user_message.dart';
+import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/text_prompt_dialog.dart';
 import '../../merchants/merchant_autocomplete.dart';
 import '../../templates/save_template_dialog.dart';
@@ -14,10 +14,12 @@ import '../../templates/template_picker_sheet.dart';
 import '../data/transaction_form_service.dart';
 import '../domain/ledger_models.dart';
 import '../domain/payment_channel_policy.dart';
+import 'amount_field.dart';
 import 'transaction_form_details.dart';
 import 'transaction_form_fields.dart';
 import 'transaction_form_notifier.dart';
 import 'transaction_form_state.dart';
+import 'transaction_type_selector.dart';
 
 final class TransactionFormScreen extends ConsumerStatefulWidget {
   const TransactionFormScreen({
@@ -152,15 +154,27 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
             ),
         ],
       ),
-      body: accountsAsync.when(
-        loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, _) => Center(child: Text('$error')),
+      body: AsyncValueView(
+        value: accountsAsync,
+        onRetry: () => ref.invalidate(accountsProvider),
         data: (activeAccounts) {
           if (state.loading) {
             return const Center(child: CircularProgressIndicator());
           }
           if (state.loadError != null) {
-            return Center(child: Text(state.loadError!));
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(state.loadError!, textAlign: TextAlign.center),
+                  const SizedBox(height: 12),
+                  FilledButton(
+                    onPressed: _vm.retryLoad,
+                    child: const Text('Reintentar'),
+                  ),
+                ],
+              ),
+            );
           }
           final accounts = state.accountsFrom(activeAccounts);
           final categories = state.categoriesFrom(
@@ -188,9 +202,15 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
               children: [
-                _amountField(context),
+                AmountField(
+                  controller: _amount,
+                  autofocus: widget.cloneId == null,
+                ),
                 const SizedBox(height: 16),
-                _typeSelector(state),
+                TransactionTypeSelector(
+                  type: state.type,
+                  onChanged: widget.editId != null ? null : _vm.setType,
+                ),
                 const SizedBox(height: 16),
                 if (state.needsFrom)
                   AccountField(
@@ -241,6 +261,8 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
                         onAmount: (text) => _vm.setSplitAmount(split.id, text),
                         onRemove: () => _vm.removeSplit(split.id),
                       ),
+                    if (state.splitRemainingMinor case final remaining?)
+                      SplitRemaining(remainingMinor: remaining),
                     TextButton.icon(
                       onPressed: _vm.addSplit,
                       icon: const Icon(Icons.add),
@@ -306,78 +328,6 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     );
   }
 
-  Widget _amountField(BuildContext context) => TextFormField(
-    controller: _amount,
-    inputFormatters: [PygInputFormatter()],
-    autofocus: widget.cloneId == null,
-    keyboardType: TextInputType.number,
-    textInputAction: TextInputAction.next,
-    style: Theme.of(context).textTheme.headlineMedium,
-    decoration: const InputDecoration(prefixText: 'PYG ', labelText: 'Importe'),
-    validator: (value) {
-      try {
-        if (Money.parse(value ?? '').minorUnits <= 0) {
-          return 'Debe ser mayor que cero';
-        }
-      } catch (_) {
-        return 'Ingresá un importe válido';
-      }
-      return null;
-    },
-  );
-
-  Widget _typeSelector(TransactionFormState state) {
-    final onChange = widget.editId != null ? null : _vm.setType;
-    if (MediaQuery.sizeOf(context).width < 420 &&
-        MediaQuery.textScalerOf(context).scale(14) > 20) {
-      return DropdownButtonFormField<TransactionType>(
-        initialValue: state.type,
-        isExpanded: true,
-        decoration: const InputDecoration(labelText: 'Tipo'),
-        items: const [
-          DropdownMenuItem(
-            value: TransactionType.expense,
-            child: Text('Gasto'),
-          ),
-          DropdownMenuItem(
-            value: TransactionType.income,
-            child: Text('Ingreso'),
-          ),
-          DropdownMenuItem(
-            value: TransactionType.transfer,
-            child: Text('Transferir'),
-          ),
-        ],
-        onChanged: onChange == null
-            ? null
-            : (value) => onChange(value ?? state.type),
-      );
-    }
-    return SegmentedButton<TransactionType>(
-      segments: const [
-        ButtonSegment(
-          value: TransactionType.expense,
-          label: Text('Gasto'),
-          icon: Icon(Icons.south_west),
-        ),
-        ButtonSegment(
-          value: TransactionType.income,
-          label: Text('Ingreso'),
-          icon: Icon(Icons.north_east),
-        ),
-        ButtonSegment(
-          value: TransactionType.transfer,
-          label: Text('Transferir'),
-          icon: Icon(Icons.swap_horiz),
-        ),
-      ],
-      selected: {state.type},
-      onSelectionChanged: onChange == null
-          ? null
-          : (value) => onChange(value.first),
-    );
-  }
-
   // --- acciones que necesitan el contexto ---
 
   Future<void> _pickDate() async {
@@ -401,7 +351,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
     try {
       await _vm.createCategory(value);
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
     }
   }
 
@@ -453,7 +403,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
         originalFrequency: defaults.frequency,
       );
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
       return null;
     }
   }
@@ -475,7 +425,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
         if (mounted && widget.editTemplate) context.pop();
       }
     } catch (error) {
-      if (mounted) _message('$error');
+      if (mounted) _message(userMessage(error));
     } finally {
       if (mounted) _vm.setSaving(false);
     }
@@ -515,7 +465,7 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
         if (mounted) context.pop();
       }
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
       if (mounted) _vm.setSaving(false);
     }
   }

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
+import '../../../core/errors/user_message.dart';
 import '../../../core/security/app_lock_service.dart';
 import '../../accounts/data/accounts_service.dart';
 import '../../accounts/presentation/create_account_dialog.dart';
@@ -88,11 +89,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         'Tus finanzas quedan en tu teléfono',
         style: Theme.of(context).textTheme.headlineMedium,
       ),
-      const SizedBox(height: 16),
-      const Text(
-        'La app funciona sin cuenta, servidor, anuncios ni telemetría. '
-        'Podés exportar y respaldar todos tus datos cuando quieras.',
-      ),
       const SizedBox(height: 32),
       const DropdownMenu<String>(
         initialSelection: 'PYG',
@@ -101,10 +97,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         dropdownMenuEntries: [
           DropdownMenuEntry(value: 'PYG', label: 'PYG — Guaraní paraguayo'),
         ],
-      ),
-      const SizedBox(height: 12),
-      const Text(
-        'Los importes PYG se guardan como enteros y se muestran sin decimales.',
       ),
     ],
   );
@@ -116,19 +108,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         'Agregá tus cuentas',
         style: Theme.of(context).textTheme.headlineMedium,
       ),
-      const SizedBox(height: 8),
-      const Text(
-        'Ingresá las cuentas que usás, con el nombre que prefieras. '
-        'Podés agregarlas ahora o más adelante desde Cuentas.',
-      ),
       const SizedBox(height: 24),
       if (_accounts.isEmpty)
         const Card(
           child: Padding(
             padding: EdgeInsets.all(16),
-            child: Text(
-              'Todavía no agregaste cuentas. Para registrar movimientos necesitarás al menos una.',
-            ),
+            child: Text('Todavía no agregaste cuentas.'),
           ),
         ),
       for (final account in _accounts)
@@ -167,18 +152,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         value: _lock,
         onChanged: (value) => setState(() => _lock = value),
         title: const Text('Bloquear al abrir o volver a la app'),
-        subtitle: const Text(
-          'Usa biometría o el bloqueo seguro del dispositivo.',
-        ),
-      ),
-      const SizedBox(height: 24),
-      const Card(
-        child: Padding(
-          padding: EdgeInsets.all(16),
-          child: Text(
-            'El bloqueo es opcional. El registro manual y todos los datos funcionan completamente offline.',
-          ),
-        ),
       ),
     ],
   );
@@ -203,7 +176,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           );
       if (mounted) context.go('/dashboard');
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
       if (mounted) setState(() => _saving = false);
     }
   }

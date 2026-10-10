@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../../shared/widgets/money_text.dart';
@@ -125,7 +126,9 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
-                    child: Text('No se pudieron cargar: ${snapshot.error}'),
+                    child: const Text(
+                      'No se pudieron cargar los presupuestos.',
+                    ),
                   );
                 }
                 if (!snapshot.hasData) {
@@ -138,7 +141,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
                 }
                 return LayoutBuilder(
                   builder: (context, c) => SingleChildScrollView(
-                    padding: const EdgeInsets.all(16),
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
                     child: Wrap(
                       spacing: 12,
                       runSpacing: 12,
@@ -155,9 +158,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
                               stream: service.watchProgress(b),
                               builder: (context, p) {
                                 if (p.hasError) {
-                                  return Text(
-                                    'No se pudo calcular: ${p.error}',
-                                  );
+                                  return const Text('No se pudo calcular.');
                                 }
                                 if (!p.hasData) {
                                   return const LinearProgressIndicator();
@@ -353,7 +354,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
       if (old != null) categories.add(old);
     }
     if (!mounted) return;
-    final current = DateTime.now();
+    final current = _month;
     await showDialog<void>(
       context: context,
       builder: (dialog) => StatefulBuilder(
@@ -460,7 +461,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
                         if (dialog.mounted) {
                           update(() {
                             busy = false;
-                            error = '$e';
+                            error = userMessage(e);
                           });
                         }
                       }

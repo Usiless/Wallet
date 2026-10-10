@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../../core/database/app_database.dart';
+import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../domain/ledger_models.dart';
 import 'transaction_form_state.dart';
@@ -155,4 +156,28 @@ class SplitRowState extends State<SplitRow> {
       ],
     ),
   );
+}
+
+/// Lo que falta asignar a las divisiones, o el excedente en rojo.
+final class SplitRemaining extends StatelessWidget {
+  const SplitRemaining({required this.remainingMinor, super.key});
+
+  final int remainingMinor;
+
+  @override
+  Widget build(BuildContext context) {
+    final excess = remainingMinor < 0;
+    final color = excess
+        ? Theme.of(context).colorScheme.error
+        : Theme.of(context).colorScheme.onSurfaceVariant;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Text(
+        excess
+            ? 'Excedente ${Money(-remainingMinor).format()}'
+            : 'Restante ${Money(remainingMinor).format()}',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: color),
+      ),
+    );
+  }
 }

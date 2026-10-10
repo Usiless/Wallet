@@ -39,6 +39,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
     ),
     body: AsyncValueView(
       value: ref.watch(manualTemplatesProvider),
+      onRetry: () => ref.invalidate(manualTemplatesProvider),
       data: (allTemplates) {
         final templates = scheduledOnly
             ? allTemplates.where((template) {
@@ -57,7 +58,7 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
                 ),
               )
             : ListView(
-                padding: const EdgeInsets.all(16),
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 88),
                 children: [
                   for (final template in templates)
                     Card(
@@ -177,8 +178,10 @@ class _TemplatesScreenState extends ConsumerState<TemplatesScreen> {
       final service = ref.read(scheduledTemplateServiceProvider);
       if (skip) {
         await service.skipPending(id);
+        if (context.mounted) showMessage(context, 'Vencimiento omitido.');
       } else {
         await service.pause(id);
+        if (context.mounted) showMessage(context, 'Programación pausada.');
       }
     } catch (error) {
       if (context.mounted) showError(context, error);

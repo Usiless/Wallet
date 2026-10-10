@@ -10,6 +10,7 @@ final class MoneyText extends StatelessWidget {
     this.signed = false,
     this.currencySymbol,
     this.maxLines = 1,
+    this.fitWidth = false,
     super.key,
   });
 
@@ -20,17 +21,27 @@ final class MoneyText extends StatelessWidget {
   final String? currencySymbol;
   final int? maxLines;
 
+  /// Reduce la escala del importe para que quepa completo en el ancho
+  /// disponible, en lugar de cortarlo con «…». Solo se usa por opción explícita.
+  final bool fitWidth;
+
   @override
   Widget build(BuildContext context) {
     final money = Money(minorUnits, currencyCode: currencyCode);
     final formatted = currencySymbol == null
         ? money.format()
         : '${money.format(withCode: false).trim()} $currencySymbol';
-    return Text(
+    final text = Text(
       signed && minorUnits > 0 ? '+$formatted' : formatted,
       style: style,
-      maxLines: maxLines,
-      overflow: TextOverflow.ellipsis,
+      maxLines: fitWidth ? 1 : maxLines,
+      overflow: fitWidth ? TextOverflow.visible : TextOverflow.ellipsis,
+    );
+    if (!fitWidth) return text;
+    return FittedBox(
+      fit: BoxFit.scaleDown,
+      alignment: AlignmentDirectional.centerStart,
+      child: text,
     );
   }
 }

@@ -8,6 +8,7 @@ import '../../../core/money/pyg_input_formatter.dart';
 import '../domain/pending_payment_models.dart';
 import 'payment_reminder_fields.dart';
 import '../../../shared/widgets/app_snack.dart';
+import '../../../shared/widgets/async_value_view.dart';
 
 class PaymentDetailScreen extends ConsumerStatefulWidget {
   const PaymentDetailScreen({required this.paymentId, super.key});
@@ -40,16 +41,19 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
     if (context.mounted) showError(context, error);
   }
 
-  Future<void> _run(Future<void> Function() action) async {
+  Future<void> _run(Future<void> Function() action, {String? success}) async {
     if (_busy) return;
     setState(() => _busy = true);
+    var done = false;
     try {
       await action();
+      done = true;
     } catch (e) {
       _message(e);
     } finally {
       if (mounted) setState(() => _busy = false);
     }
+    if (done && success != null && mounted) showMessage(context, success);
   }
 
   String _money(int value) => Money(value, currencyCode: 'PYG').format();
@@ -64,223 +68,210 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(title: const Text('Detalle de pago')),
-    body: ref
-        .watch(pendingPaymentsProvider)
-        .when(
-          loading: () => const Center(child: CircularProgressIndicator()),
-          error: (e, _) => Center(child: Text('$e')),
-          data: (rows) {
-            final matches = rows.where((p) => p.id == widget.paymentId);
-            if (matches.isEmpty) {
-              return const Center(child: Text('Pago no disponible'));
-            }
-            final p = matches.first;
-            if (_loadedRevision != p.revision) {
-              final firstLoad = _loadedRevision == null;
-              _loadedRevision = p.revision;
-              final remaining = p.remainingMinor > 0
-                  ? Money(p.remainingMinor).format(withCode: false).trim()
-                  : '';
-              if (firstLoad) {
+    body: AsyncValueView(
+      value: ref.watch(pendingPaymentsProvider),
+      onRetry: () => ref.invalidate(pendingPaymentsProvider),
+      data: (rows) {
+        final matches = rows.where((p) => p.id == widget.paymentId);
+        if (matches.isEmpty) {
+          return const Center(child: Text('Pago no disponible'));
+        }
+        final p = matches.first;
+        if (_loadedRevision != p.revision) {
+          final firstLoad = _loadedRevision == null;
+          _loadedRevision = p.revision;
+          final remaining = p.remainingMinor > 0
+              ? Money(p.remainingMinor).format(withCode: false).trim()
+              : '';
+          if (firstLoad) {
+            _amount.text = remaining;
+          } else {
+            // El campo ya escucha el controlador: no se modifica durante build.
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (mounted && _loadedRevision == p.revision) {
                 _amount.text = remaining;
-              } else {
-                // El campo ya escucha el controlador: no se modifica durante build.
-                WidgetsBinding.instance.addPostFrameCallback((_) {
-                  if (mounted && _loadedRevision == p.revision) {
-                    _amount.text = remaining;
-                  }
-                });
               }
-              _account = null;
-              _userSelectedAccount = false;
-              _carry = false;
-            }
-            final hasNext = rows.any(
-              (q) =>
-                  q.planId == p.planId &&
-                  q.installmentNumber > p.installmentNumber &&
-                  !q.cancelled &&
-                  q.remainingMinor > 0,
-            );
-            final payable = !p.cancelled && p.remainingMinor > 0;
-            return ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
-                Text(
-                  p.description.isEmpty ? 'Pago pendiente' : p.description,
-                  style: Theme.of(context).textTheme.headlineSmall,
+            });
+          }
+          _account = null;
+          _userSelectedAccount = false;
+          _carry = false;
+        }
+        final hasNext = rows.any(
+          (q) =>
+              q.planId == p.planId &&
+              q.installmentNumber > p.installmentNumber &&
+              !q.cancelled &&
+              q.remainingMinor > 0,
+        );
+        final payable = !p.cancelled && p.remainingMinor > 0;
+        return ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Text(
+              p.description.isEmpty ? 'Pago pendiente' : p.description,
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              title: Text('Cuota ${p.installmentNumber}/${p.installmentCount}'),
+              subtitle: Text(_date(p.dueDate)),
+            ),
+            Text('Previsto: ${_money(p.amountMinor)}'),
+            Text('Pagado: ${_money(p.paidMinor)}'),
+            Text(
+              p.cancelled
+                  ? 'Cancelado'
+                  : 'Pendiente: ${_money(p.remainingMinor)}',
+            ),
+            if (p.data['carriedTo'] != null)
+              TextButton(
+                onPressed: () =>
+                    context.push('/payments/${p.data['carriedTo']}'),
+                child: const Text('Ver cuota con resto trasladado'),
+              ),
+            for (final payment in p.effectivePayments ?? p.payments)
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: Text(_money(payment['amountMinor'] as int)),
+                subtitle: Text(
+                  _date(DateTime.parse(payment['paidAt'] as String)),
                 ),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: Text(
-                    'Cuota ${p.installmentNumber}/${p.installmentCount}',
-                  ),
-                  subtitle: Text(_date(p.dueDate)),
+                onTap: () => context.push(
+                  '/transactions/new?edit=${payment['transactionId']}',
                 ),
-                Text('Previsto: ${_money(p.amountMinor)}'),
-                Text('Pagado: ${_money(p.paidMinor)}'),
-                Text(
-                  p.cancelled
-                      ? 'Cancelado'
-                      : 'Pendiente: ${_money(p.remainingMinor)}',
-                ),
-                if (p.data['carriedTo'] != null)
-                  TextButton(
-                    onPressed: () =>
-                        context.push('/payments/${p.data['carriedTo']}'),
-                    child: const Text('Ver cuota con resto trasladado'),
-                  ),
-                for (final payment in p.effectivePayments ?? p.payments)
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: Text(_money(payment['amountMinor'] as int)),
-                    subtitle: Text(
-                      _date(DateTime.parse(payment['paidAt'] as String)),
-                    ),
-                    onTap: () => context.push(
-                      '/transactions/new?edit=${payment['transactionId']}',
-                    ),
-                  ),
-                if (payable) ...[
-                  const SizedBox(height: 16),
-                  TextFormField(
-                    key: const ValueKey('paid-amount'),
-                    controller: _amount,
-                    keyboardType: TextInputType.number,
-                    inputFormatters: [PygInputFormatter()],
-                    decoration: const InputDecoration(
-                      labelText: 'Importe pagado',
-                    ),
-                  ),
-                  ListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('Fecha de pago'),
-                    subtitle: Text(_date(_paidAt)),
-                    onTap: _busy
-                        ? null
-                        : () async {
-                            final date = await _pickDate(_paidAt);
-                            if (date != null && mounted) {
-                              setState(() => _paidAt = date);
-                            }
-                          },
-                  ),
-                  ref
-                      .watch(accountsProvider)
-                      .when(
-                        loading: () => const LinearProgressIndicator(),
-                        error: (e, _) => Text('$e'),
-                        data: (all) {
-                          final accounts = all
-                              .where(
-                                (a) =>
-                                    !a.isArchived &&
-                                    a.type != 'creditCard' &&
-                                    a.currencyCode == 'PYG',
-                              )
-                              .toList();
-                          String? suggested = p.accountId;
-                          DateTime? latestPaidAt;
-                          for (final installment in rows.where(
-                            (q) => q.planId == p.planId,
-                          )) {
-                            for (final payment
-                                in installment.effectivePayments ??
-                                    installment.payments) {
-                              final date = DateTime.parse(
-                                payment['paidAt'] as String,
-                              );
-                              if (latestPaidAt == null ||
-                                  !date.isBefore(latestPaidAt)) {
-                                latestPaidAt = date;
-                                suggested = payment['accountId'] as String?;
-                              }
-                            }
-                          }
-                          final candidate = _userSelectedAccount
-                              ? _account
-                              : suggested;
-                          final selected =
-                              accounts.any((a) => a.id == candidate)
-                              ? candidate
-                              : !_userSelectedAccount &&
-                                    accounts.any((a) => a.id == p.accountId)
-                              ? p.accountId
-                              : null;
-                          _account = selected;
-                          return DropdownButtonFormField<String>(
-                            key: ValueKey('account-$selected'),
-                            initialValue: selected,
-                            isExpanded: true,
-                            decoration: const InputDecoration(
-                              labelText: 'Cuenta',
-                            ),
-                            items: [
-                              for (final a in accounts)
-                                DropdownMenuItem(
-                                  value: a.id,
-                                  child: Text(a.name),
-                                ),
-                            ],
-                            onChanged: _busy
-                                ? null
-                                : (v) => setState(() {
-                                    _account = v;
-                                    _userSelectedAccount = true;
-                                  }),
+              ),
+            if (payable) ...[
+              const SizedBox(height: 16),
+              TextFormField(
+                key: const ValueKey('paid-amount'),
+                controller: _amount,
+                keyboardType: TextInputType.number,
+                inputFormatters: [PygInputFormatter()],
+                decoration: const InputDecoration(labelText: 'Importe pagado'),
+              ),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Fecha de pago'),
+                subtitle: Text(_date(_paidAt)),
+                onTap: _busy
+                    ? null
+                    : () async {
+                        final date = await _pickDate(_paidAt);
+                        if (date != null && mounted) {
+                          setState(() => _paidAt = date);
+                        }
+                      },
+              ),
+              ref
+                  .watch(accountsProvider)
+                  .when(
+                    loading: () => const LinearProgressIndicator(),
+                    error: (_, _) => const Text('No se pudo cargar.'),
+                    data: (all) {
+                      final accounts = all
+                          .where(
+                            (a) =>
+                                !a.isArchived &&
+                                a.type != 'creditCard' &&
+                                a.currencyCode == 'PYG',
+                          )
+                          .toList();
+                      String? suggested = p.accountId;
+                      DateTime? latestPaidAt;
+                      for (final installment in rows.where(
+                        (q) => q.planId == p.planId,
+                      )) {
+                        for (final payment
+                            in installment.effectivePayments ??
+                                installment.payments) {
+                          final date = DateTime.parse(
+                            payment['paidAt'] as String,
                           );
-                        },
-                      ),
-                  if (hasNext)
-                    CheckboxListTile(
-                      contentPadding: EdgeInsets.zero,
-                      title: const Text('Trasladar resto a la siguiente cuota'),
-                      value: _carry,
-                      onChanged: _busy
-                          ? null
-                          : (v) => setState(() => _carry = v ?? false),
-                    ),
-                  const SizedBox(height: 16),
-                  FilledButton(
-                    onPressed: _busy
-                        ? null
-                        : () => _run(() async {
-                            if (_account == null) {
-                              throw StateError('Elegí una cuenta.');
-                            }
-                            await ref
-                                .read(pendingPaymentServiceProvider)
-                                .pay(
-                                  id: p.id,
-                                  expectedRevision: p.revision,
-                                  amountMinor: Money.parse(_amount.text)
-                                      .minorUnits,
-                                  paidAt: _paidAt,
-                                  accountId: _account!,
-                                  carryRemainder: hasNext && _carry,
-                                  expectedBookGeneration: _bookGeneration,
-                                );
-                          }),
-                    child: const Text('Confirmar pago'),
+                          if (latestPaidAt == null ||
+                              !date.isBefore(latestPaidAt)) {
+                            latestPaidAt = date;
+                            suggested = payment['accountId'] as String?;
+                          }
+                        }
+                      }
+                      final candidate = _userSelectedAccount
+                          ? _account
+                          : suggested;
+                      final selected = accounts.any((a) => a.id == candidate)
+                          ? candidate
+                          : !_userSelectedAccount &&
+                                accounts.any((a) => a.id == p.accountId)
+                          ? p.accountId
+                          : null;
+                      _account = selected;
+                      return DropdownButtonFormField<String>(
+                        key: ValueKey('account-$selected'),
+                        initialValue: selected,
+                        isExpanded: true,
+                        decoration: const InputDecoration(labelText: 'Cuenta'),
+                        items: [
+                          for (final a in accounts)
+                            DropdownMenuItem(value: a.id, child: Text(a.name)),
+                        ],
+                        onChanged: _busy
+                            ? null
+                            : (v) => setState(() {
+                                _account = v;
+                                _userSelectedAccount = true;
+                              }),
+                      );
+                    },
                   ),
-                  if (p.paidMinor == 0)
-                    TextButton(
-                      onPressed: _busy ? null : () => _edit(p),
-                      child: const Text('Editar pendiente'),
-                    ),
-                  TextButton(
-                    onPressed: _busy ? null : () => _reminders(p),
-                    child: const Text('Recordatorios'),
-                  ),
-                  TextButton(
-                    onPressed: _busy ? null : () => _cancel(p),
-                    child: const Text('Cancelar pendiente'),
-                  ),
-                ],
-              ],
-            );
-          },
-        ),
+              if (hasNext)
+                CheckboxListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Trasladar resto a la siguiente cuota'),
+                  value: _carry,
+                  onChanged: _busy
+                      ? null
+                      : (v) => setState(() => _carry = v ?? false),
+                ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: _busy
+                    ? null
+                    : () => _run(() async {
+                        if (_account == null) {
+                          throw StateError('Elegí una cuenta.');
+                        }
+                        await ref
+                            .read(pendingPaymentServiceProvider)
+                            .pay(
+                              id: p.id,
+                              expectedRevision: p.revision,
+                              amountMinor: Money.parse(_amount.text).minorUnits,
+                              paidAt: _paidAt,
+                              accountId: _account!,
+                              carryRemainder: hasNext && _carry,
+                              expectedBookGeneration: _bookGeneration,
+                            );
+                      }, success: 'Pago registrado.'),
+                child: const Text('Confirmar pago'),
+              ),
+              if (p.paidMinor == 0)
+                TextButton(
+                  onPressed: _busy ? null : () => _edit(p),
+                  child: const Text('Editar pendiente'),
+                ),
+              TextButton(
+                onPressed: _busy ? null : () => _reminders(p),
+                child: const Text('Recordatorios'),
+              ),
+              TextButton(
+                onPressed: _busy ? null : () => _cancel(p),
+                child: const Text('Cancelar pendiente'),
+              ),
+            ],
+          ],
+        );
+      },
+    ),
   );
   Future<void> _cancel(PendingPayment p) async {
     final accepted = await showDialog<bool>(
@@ -308,6 +299,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
               expectedRevision: p.revision,
               expectedBookGeneration: _bookGeneration,
             ),
+        success: 'Pendiente cancelado.',
       );
     }
   }
@@ -380,6 +372,7 @@ class _PaymentDetailScreenState extends ConsumerState<PaymentDetailScreen> {
               following: following,
               expectedBookGeneration: _bookGeneration,
             ),
+        success: 'Pendiente actualizado.',
       );
     }
     // The dialog route may still be animating when its future completes.

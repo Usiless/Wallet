@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../../../core/config/feature_flags.dart';
 import '../../../core/text/normalization.dart';
 import '../../../shared/widgets/async_value_view.dart';
@@ -61,13 +62,14 @@ final class PendingInboxScreen extends ConsumerWidget {
       ),
       body: AsyncValueView(
         value: candidates,
+        onRetry: () => ref.invalidate(pendingCandidatesProvider),
         data: (rows) {
           if (rows.isEmpty) {
             return const Center(
               child: Padding(
                 padding: EdgeInsets.all(32),
                 child: Text(
-                  'No hay compras pendientes. Las notificaciones compatibles aparecerán aquí antes de afectar tus saldos.',
+                  'No hay compras pendientes.',
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -283,7 +285,7 @@ final class _CandidateCard extends ConsumerWidget {
       }
     } catch (error) {
       if (messenger.mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('$error')));
+        messenger.showSnackBar(SnackBar(content: Text(userMessage(error))));
       }
     }
   }

@@ -7,7 +7,6 @@ import '../../../core/database/app_database.dart';
 import '../data/accounts_service.dart';
 import '../../../shared/widgets/async_value_view.dart';
 import '../../../shared/widgets/money_text.dart';
-import '../../../core/money/money.dart';
 import '../../transactions/domain/ledger_models.dart';
 import 'create_account_dialog.dart';
 import '../../transactions/presentation/ledger_actions.dart';
@@ -29,13 +28,11 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
   String? _type;
   @override
   Widget build(BuildContext context) {
-    final accounts = ref.watch(
-      _showArchived || widget.accountId != null
-          ? allAccountsProvider
-          : accountsProvider,
-    );
-    final balances =
-        ref.watch(accountBalancesProvider).value ?? const <AccountBalance>[];
+    final accountsSource = _showArchived || widget.accountId != null
+        ? allAccountsProvider
+        : accountsProvider;
+    final accounts = ref.watch(accountsSource);
+    final balances = ref.watch(accountBalancesProvider);
     final selected = accounts.value
         ?.where((a) => a.id == widget.accountId)
         .firstOrNull;
@@ -45,18 +42,13 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
           : AppBar(title: Text(selected?.name ?? 'Cuenta')),
       body: AsyncValueView(
         value: accounts,
+        onRetry: () => ref.invalidate(accountsSource),
         data: (rows) {
           if (widget.accountId != null) {
             if (selected == null) {
               return const Center(child: Text('Cuenta no disponible.'));
             }
-            final balance =
-                balances
-                    .where((b) => b.id == selected.id)
-                    .firstOrNull
-                    ?.balanceMinor ??
-                selected.initialBalanceMinor;
-            return _detail(selected, balance);
+            return _detail(selected, balances);
           }
           final filtered = rows
               .where((a) => _type == null || a.type == _type)
@@ -139,13 +131,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                                   FittedBox(
                                     fit: BoxFit.scaleDown,
                                     alignment: Alignment.centerLeft,
-                                    child: MoneyText(
-                                      balances
-                                              .where((b) => b.id == account.id)
-                                              .firstOrNull
-                                              ?.balanceMinor ??
-                                          account.initialBalanceMinor,
-                                      currencyCode: account.currencyCode,
+                                    child: _BalanceFigure(
+                                      balances: balances,
+                                      account: account,
                                       style: Theme.of(context)
                                           .textTheme
                                           .titleMedium,
@@ -176,7 +164,10 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
     );
   }
 
-  Widget _detail(AccountRecord account, int balance) {
+  Widget _detail(
+    AccountRecord account,
+    AsyncValue<List<AccountBalance>> balances,
+  ) {
     final movements = ref.watch(
       movementHistoryProvider((
         filter: (
@@ -212,8 +203,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                       ? 'Deuda registrada'
                       : 'Saldo registrado',
                 ),
-                Text(
-                  Money(balance, currencyCode: account.currencyCode).format(),
+                _BalanceFigure(
+                  balances: balances,
+                  account: account,
                   style: Theme.of(context).textTheme.headlineMedium,
                 ),
                 if (account.isArchived) const Text('Archivada'),
@@ -224,10 +216,15 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         if (account.type == 'creditCard')
           Builder(
             builder: (context) {
+              if (balances.value == null) {
+                return balances.hasError
+                    ? const Text('No se pudo cargar el saldo.')
+                    : const LinearProgressIndicator();
+              }
+              final balance = _balanceRow(balances, account);
+              if (balance == null) return const _UnavailableBalance();
               if (cardProfile!.hasError) {
-                return Text(
-                  'No se pudo cargar la tarjeta: ${cardProfile.error}',
-                );
+                return const Text('No se pudo cargar la tarjeta.');
               }
               if (!cardProfile.hasValue) return const LinearProgressIndicator();
               final profile = cardProfile.value;
@@ -327,7 +324,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         Builder(
           builder: (context) {
             if (movements.hasError) {
-              return Text('No se pudieron cargar: ${movements.error}');
+              return const Text('No se pudieron cargar los movimientos.');
             }
             if (!movements.hasValue) return const LinearProgressIndicator();
             if (movements.value!.isEmpty) {
@@ -379,6 +376,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
       );
       if (draft == null || !mounted) return;
       await ref.read(accountsServiceProvider).edit(account.id, draft);
+      if (context.mounted) showMessage(context, 'Cuenta editada.');
     } catch (error) {
       if (context.mounted) showError(context, error);
     }
@@ -389,6 +387,12 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
       await ref
           .read(accountsServiceProvider)
           .setArchived(account.id, !account.isArchived);
+      if (context.mounted) {
+        showMessage(
+          context,
+          account.isArchived ? 'Cuenta reactivada.' : 'Cuenta archivada.',
+        );
+      }
     } catch (error) {
       if (context.mounted) showError(context, error);
     }
@@ -403,5 +407,53 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
     } catch (error) {
       if (context.mounted) showError(context, error);
     }
+  }
+}
+
+/// Saldo de la fila de saldos; null si no hay fila (cuenta archivada o saldos sin cargar).
+int? _balanceRow(
+  AsyncValue<List<AccountBalance>> balances,
+  AccountRecord account,
+) => balances.value?.where((b) => b.id == account.id).firstOrNull?.balanceMinor;
+
+/// Sin saldo real no se muestra un número: ni el saldo inicial ni uno calculado.
+final class _UnavailableBalance extends StatelessWidget {
+  const _UnavailableBalance();
+
+  @override
+  Widget build(BuildContext context) => Semantics(
+    container: true,
+    excludeSemantics: true,
+    label: 'Saldo no disponible',
+    child: Text('—'),
+  );
+}
+
+/// Nunca muestra el saldo inicial: sin fila de saldo muestra «—».
+final class _BalanceFigure extends StatelessWidget {
+  const _BalanceFigure({
+    required this.balances,
+    required this.account,
+    this.style,
+  });
+
+  final AsyncValue<List<AccountBalance>> balances;
+  final AccountRecord account;
+  final TextStyle? style;
+
+  @override
+  Widget build(BuildContext context) {
+    if (balances.value == null) {
+      return balances.hasError
+          ? const Text('No se pudo cargar el saldo.')
+          : const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            );
+    }
+    final balance = _balanceRow(balances, account);
+    if (balance == null) return const _UnavailableBalance();
+    return MoneyText(balance, currencyCode: account.currencyCode, style: style);
   }
 }
