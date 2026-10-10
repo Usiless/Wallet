@@ -6,9 +6,9 @@ P01–P05: cinco pestañas, consulta mensual/anillos, tabla compacta de reportes
 
 ## Revisión HTML posterior aceptada · 2026-10-07
 
-El prototipo actual incorpora gasto unificado con cuotas, pendientes de pago y recordatorios simulados, simplificación de Inicio, FAB consistentes y anillos proporcionales sin leyenda/rayado. El usuario acepta esta revisión y pide documentarla. [Decisiones vigentes](PRODUCT_BASELINE.md#prototipo-revisado-y-aceptado--2026-10-07), [estado y diferencias nativas](PROTOTYPE_STATUS.md) y [evidencias](../prototype/cabal/evaluation/unified-expense-2026-10-07/REPORT.md).
+El prototipo actual incorpora gasto unificado con cuotas, pendientes de pago y recordatorios simulados, simplificación de Inicio, FAB consistentes y anillos proporcionales sin leyenda/rayado. El usuario acepta esta revisión y pide documentarla. [Decisiones vigentes](PRODUCT_BASELINE.md#prototipo-revisado-y-aceptado--2026-10-07), [estado y diferencias nativas](PROTOTYPE_STATUS.md) y evidencias.
 
-Última regresión HTML: **57 pruebas financieras + 9 de anillos**, sin fallos. Recorridos de navegador y revisiones independientes delimitados en los informes. Esta revisión no modificó Flutter ni generó APK; el traslado previo no acredita paridad con estos ajustes posteriores. La continuación nativa fue autorizada expresamente y se contrastó en [el plan del traslado](superpowers/plans/2026-10-07-approved-prototype-flutter.md); su resultado y límites se registran en [el informe Flutter](evaluation/flutter-port-2026-10-07/REPORT.md).
+Última regresión HTML: **57 pruebas financieras + 9 de anillos**, sin fallos. Recorridos de navegador y revisiones independientes delimitados en los informes. Esta revisión no modificó Flutter ni generó APK; el traslado previo no acredita paridad con estos ajustes posteriores. La continuación nativa fue autorizada expresamente y se contrastó en el plan del traslado; su resultado y límites se registran en [el informe Flutter](evaluation/flutter-port-2026-10-07/REPORT.md).
 
 P08 queda parcialmente aprobado para recordatorios de cuotas y gastos pendientes; backups periódicos siguen como propuesta. P07 y el resto de P09 siguen fuera; los ejemplos de SMS son una dirección futura, sin alcance de implementación aprobado.
 

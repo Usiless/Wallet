@@ -31,7 +31,7 @@ node prototype/cabal/model.test.js
 node prototype/cabal/budget-ring.test.cjs
 ```
 
-Última regresión: 57 pruebas financieras +9 de anillos, todas correctas. [Informe final y capturas](evaluation/unified-expense-2026-10-07/REPORT.md); [índice de ciclos funcionales y visuales](../../docs/PROTOTYPE_STATUS.md#evidencia-vigente). Los informes anteriores son históricos: no describen necesariamente la interfaz actual ni acreditan repetición integral de pruebas.
+Última regresión: 57 pruebas financieras +9 de anillos, todas correctas. Informe final y capturas; [índice de ciclos funcionales y visuales](../../docs/PROTOTYPE_STATUS.md#evidencia-vigente). Los informes anteriores son históricos: no describen necesariamente la interfaz actual ni acreditan repetición integral de pruebas.
 
 ## Datos y límites
 

@@ -40,7 +40,7 @@ Este documento no aprueba cambios de producto ni modifica Flutter. La fuente de 
 - La base pide validar navegación mensual de presupuestos, pero la UI usa `DateTime.now()` sin selector. Añadirlo sería una propuesta de interfaz apoyada por el servicio, no una función visible existente.
 - El texto de CSV promete revertir el lote, pero no expone la acción. El prototipo puede proponer el acceso con etiqueta de cambio pendiente; no debe suponer reversión atómica ni deshacer todos los catálogos creados.
 - Perfil de tarjeta puede mostrar un mínimo si está almacenado; el formulario visible de cuenta no permite introducirlo. No presentar edición del mínimo como ya disponible.
-- `IMPLEMENTATION_STATUS.md` es histórico. `ARCHITECTURE.md` y un párrafo de `DEVELOPER_TOOLS.md` conservan afirmaciones antiguas sobre notificaciones/cifrado. Para este diseño prevalecen la base actual y el código: sin avisos del sistema para pendientes, base/cola cifradas.
+- `ARCHITECTURE.md` y un párrafo de `DEVELOPER_TOOLS.md` conservan afirmaciones antiguas sobre notificaciones/cifrado. Para este diseño prevalecen la base actual y el código: sin avisos del sistema para pendientes, base/cola cifradas.
 
 ## 2. Navegación usada en el prototipo aceptado
 

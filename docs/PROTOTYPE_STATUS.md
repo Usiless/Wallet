@@ -15,19 +15,9 @@ Actualizado documentalmente: 2026-10-08; HTML aceptado el 2026-10-07, tras acept
 
 ## Evidencia vigente
 
-Última regresión: **57/57 pruebas financieras** y **9/9 pruebas de anillos**, más sintaxis de app.js. [Resultados](../prototype/cabal/evaluation/unified-expense-2026-10-07/REPORT.md). Los dos casos nuevos del modelo verifican conservación de repartos/saldo en planes y rechazo de división inválida sin crear obligaciones.
+Última regresión: **57/57 pruebas financieras** y **9/9 pruebas de anillos**, más sintaxis de app.js. Los dos casos nuevos del modelo verifican conservación de repartos/saldo en planes y rechazo de división inválida sin crear obligaciones.
 
-| Ciclo | Evidencia y alcance |
-| --- | --- |
-| Funcional | [Resultados y hallazgos](../prototype/cabal/evaluation/validation-2026-10-07/RESULTS.md): recorridos, correcciones y evaluaciones independientes. |
-| Interfaz inicial | [Informe](../prototype/cabal/evaluation/ui-2026-10-07/REPORT.md). |
-| Composición de app Android | [Informe](../prototype/cabal/evaluation/native-feedback-2026-10-07/REPORT.md): editor y navegación. |
-| FAB y detalle | [Informe](../prototype/cabal/evaluation/fab-detail-2026-10-07/REPORT.md): acciones compartidas y metadatos de movimiento. |
-| Inicio/Cuentas | [Informe](../prototype/cabal/evaluation/home-accounts-2026-10-07/REPORT.md). |
-| Proporciones | [Informe](../prototype/cabal/evaluation/budget-proportions-2026-10-07/REPORT.md): matemática; su textura/leyenda fueron sustituidas por la revisión siguiente. |
-| Simplificación | [Informe](../prototype/cabal/evaluation/quiet-tabs-2026-10-07/REPORT.md): tonos suaves, sin leyenda ni títulos redundantes. |
-| Altas consistentes | [Informe](../prototype/cabal/evaluation/consistent-fab-2026-10-07/REPORT.md): botones individuales; la cuarta opción fue integrada posteriormente en Gasto. |
-| Gasto unificado | [Informe final](../prototype/cabal/evaluation/unified-expense-2026-10-07/REPORT.md): cuotas, categorías, errores y conservación de borradores. |
+Los informes por ciclo (funcional, interfaz inicial, composición Android, FAB y detalle, Inicio/Cuentas, proporciones, simplificación, altas consistentes y gasto unificado) se eliminaron el 2026-10-10; permanecen en el historial de control de versiones. Se conservan el [informe visual](../prototype/cabal/evaluation/REPORT.md) y el [segundo ciclo](../prototype/cabal/evaluation/ITERATION_2.md).
 
 En la última tanda se comprobó en navegador: plan de 100.001 en tres cuotas 33.333/33.333/33.335, dividido 60.001/40.000 por categoría, sin descontar disponible; crédito de 120.000 en tres cuotas, rechazo de121 cuotas; recordatorio personalizado conservado tras crear categoría; selector único oculto al dividir. Capturas a 320/390/1280 px, sin desbordamiento horizontal a 320.
 
@@ -35,7 +25,7 @@ Los informes distinguen ejecución del navegador principal de probes/simulacione
 
 ## Diferencias y límites nativos
 
-Esta revisión solo modificó HTML/JS/CSS y documentación, sin Flutter ni APK. El traslado posterior expresamente autorizado incorpora esas capacidades a Flutter; [plan de diferencias](superpowers/plans/2026-10-07-approved-prototype-flutter.md) e [informe de ejecución y límites](evaluation/flutter-port-2026-10-07/REPORT.md). El HTML se conserva intacto durante ese trabajo. La inspección, las pruebas de host y las capturas Flutter no certifican ejecución Android.
+Esta revisión solo modificó HTML/JS/CSS y documentación, sin Flutter ni APK. El traslado posterior expresamente autorizado incorpora esas capacidades a Flutter; plan de diferencias e [informe de ejecución y límites](evaluation/flutter-port-2026-10-07/REPORT.md). El HTML se conserva intacto durante ese trabajo. La inspección, las pruebas de host y las capturas Flutter no certifican ejecución Android.
 
 El bloqueo/cifrado, Wallet, permisos, backup/archivos y recordatorios del HTML son simulaciones. No demuestra notificaciones reales, ejecución con app cerrada, programación persistente, reinicios, batería/OEM, TalkBack, teclado Android o cifrado/rollback de producción. El defecto histórico H01 fue corregido en el traslado previo según el plan; no está pendiente como fallo actual del HTML.
 
