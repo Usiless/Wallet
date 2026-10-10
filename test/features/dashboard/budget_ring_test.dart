@@ -1,4 +1,4 @@
-import 'package:finanzas_locales/features/budgets/presentation/budgets_screen.dart';
+import 'package:finanzas_locales/features/budgets/presentation/budget_ring.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 

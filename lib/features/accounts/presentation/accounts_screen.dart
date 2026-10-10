@@ -11,7 +11,7 @@ import '../../../core/money/money.dart';
 import '../../transactions/domain/ledger_models.dart';
 import 'create_account_dialog.dart';
 import '../../transactions/presentation/ledger_actions.dart';
-import '../../transactions/presentation/transactions_screen.dart';
+import '../../transactions/presentation/movement_detail.dart';
 import '../../credit_cards/domain/credit_card_cycle.dart';
 import '../../../shared/widgets/app_fab.dart';
 

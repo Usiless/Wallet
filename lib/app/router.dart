@@ -8,6 +8,7 @@ import '../features/dashboard/presentation/dashboard_screen.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import '../features/pending_inbox/presentation/pending_inbox_screen.dart';
 import '../features/payments/presentation/payments_screen.dart';
+import '../features/payments/presentation/payment_detail_screen.dart';
 import '../features/developer_tools/presentation/developer_tools_screen.dart';
 import '../features/developer_tools/presentation/active_notifications_screen.dart';
 import '../features/developer_tools/presentation/notification_diagnostics_screen.dart';
