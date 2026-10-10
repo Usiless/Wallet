@@ -255,6 +255,10 @@ final class MerchantService {
     return query.watch();
   }
 
+  Future<MerchantRecord> byId(String id) => (database.select(
+    database.merchants,
+  )..where((table) => table.id.equals(id))).getSingle();
+
   Future<List<MerchantRecord>> listMerchants({bool includeArchived = false}) {
     final query = database.select(database.merchants);
     if (!includeArchived) {

@@ -18,6 +18,7 @@ import '../features/onboarding/data/onboarding_service.dart';
 import '../features/transactions/data/category_service.dart';
 import '../features/transactions/data/ledger_repository.dart';
 import '../features/transactions/data/ledger_service.dart';
+import '../features/transactions/data/transaction_form_service.dart';
 import '../features/transactions/domain/ledger_models.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
@@ -66,6 +67,19 @@ final ledgerServiceProvider = Provider(
 );
 final ledgerRepositoryProvider = Provider(
   (ref) => LedgerRepository(ref.watch(databaseProvider)),
+);
+final transactionFormServiceProvider = Provider(
+  (ref) => TransactionFormService(
+    database: ref.watch(databaseProvider),
+    ledger: ref.watch(ledgerServiceProvider),
+    installmentService: ref.watch(installmentServiceProvider),
+    merchants: ref.watch(merchantServiceProvider),
+    categories: ref.watch(categoryServiceProvider),
+    pendingPayments: ref.watch(pendingPaymentServiceProvider),
+    templates: ref.watch(manualTemplateServiceProvider),
+    scheduledTemplates: ref.watch(scheduledTemplateServiceProvider),
+    settings: ref.watch(settingsProvider),
+  ),
 );
 final installmentServiceProvider = Provider(
   (ref) => InstallmentService(ref.watch(databaseProvider)),

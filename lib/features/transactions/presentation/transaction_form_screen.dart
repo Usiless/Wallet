@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
 import '../../../core/money/money.dart';
+import '../data/transaction_form_service.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../domain/ledger_models.dart';
 import '../../payments/domain/pending_payment_models.dart';
@@ -960,7 +961,6 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
       setState(() => _saving = true);
       final pendingPlan = _pendingOn(accounts);
       final installments = _installmentsOn(accounts);
-      final count = installments ? _installmentCount : 1;
       final template = _alsoSaveTemplate && !pendingPlan
           ? await _collectTemplate(afterRegistration: true)
           : null;
@@ -969,214 +969,40 @@ class _TransactionFormScreenState extends ConsumerState<TransactionFormScreen> {
         setState(() => _saving = false);
         return;
       }
-      final money = Money.parse(_amount.text);
-      if (installments &&
-          (money.minorUnits < _installmentCount ||
-              _installmentCount < 2 ||
-              _installmentCount > 120)) {
-        throw const FormatException('Importe o cuotas inválidos.');
-      }
-      if (pendingPlan && _merchant.text.trim().isEmpty) {
-        throw const FormatException('Ingresá una descripción.');
-      }
-      await ref.read(databaseProvider).transaction(() async {
-        if (_bookGeneration != ref.read(databaseProvider).restoreGeneration) {
-          throw StateError(
-            'Los datos fueron restaurados. Cancelá y volvé a abrir el formulario.',
-          );
-        }
-        String? merchantId;
-        if (_merchant.text.trim().isNotEmpty) {
-          if (_type == TransactionType.expense &&
-              _selectedMerchant?.name == _merchant.text) {
-            final selected =
-                await (ref
-                        .read(databaseProvider)
-                        .select(ref.read(databaseProvider).merchants)
-                      ..where((t) => t.id.equals(_selectedMerchant!.id)))
-                    .getSingle();
-            if (selected.isArchived && selected.id != _originalMerchantId) {
-              throw StateError('El comercio está archivado.');
-            }
-            merchantId = selected.id;
-          } else {
-            merchantId = await ref
-                .read(merchantServiceProvider)
-                .findOrCreate(_merchant.text);
-          }
-        }
-        final splits = <SplitDraft>[];
-        if (_type != TransactionType.transfer) {
-          if (_splitEnabled) {
-            for (final input in _splits) {
-              if (input.categoryId == null) {
-                throw const FormatException('Elegí todas las categorías.');
-              }
-              splits.add(
-                SplitDraft(
-                  categoryId: input.categoryId!,
-                  amountMinor: Money.parse(input.amount.text).minorUnits,
-                ),
-              );
-            }
-          } else if (_category != null) {
-            splits.add(
-              SplitDraft(categoryId: _category!, amountMinor: money.minorUnits),
-            );
-          }
-        }
-        if (_type == TransactionType.expense &&
-            merchantId != null &&
-            !_splitEnabled &&
-            (_category == null ||
-                ref
-                        .read(categoriesProvider)
-                        .value
-                        ?.any((c) => c.id == _category) ==
-                    true)) {
-          await ref
-              .read(merchantServiceProvider)
-              .rememberCategory(merchantId, _category);
-        }
-        if (pendingPlan && _repeat != null && !installments) {
-          final first = _firstInstallmentDate ?? _occurredAt;
-          final name = _merchant.text.trim();
-          await ref.read(manualTemplateServiceProvider).save(name, {
-            'schedule': {
-              'enabled': true,
-              'paused': false,
-              'frequency': _repeat,
-              'nextDate': scheduledDate(first),
-              'anchorDay': first.day,
-              'anchorMonth': first.month,
-            },
-            'type': _type.name,
-            'amountMinor': money.minorUnits,
-            'from': _from,
-            'to': null,
-            'category': splits.length == 1 ? splits.single.categoryId : null,
-            'merchant': name,
-            'merchantId': merchantId,
-            'note': _note.text.trim(),
-            'channel': _channel.name,
-            'payLater': true,
-            'installments': false,
-            'installmentCount': 2,
-            'reminders': _reminders.toJson(),
-            'splitEnabled': splits.length > 1,
-            'splits': [
-              if (splits.length > 1)
-                for (final split in splits)
-                  {
-                    'category': split.categoryId,
-                    'amountMinor': split.amountMinor,
-                  },
-            ],
-          });
-          return;
-        }
-        if (pendingPlan) {
-          await ref
-              .read(pendingPaymentServiceProvider)
-              .createPlan(
-                amountMinor: money.minorUnits,
-                installmentCount: count,
-                firstDueDate: _firstInstallmentDate ?? _occurredAt,
-                accountId: _from!,
-                merchantId: merchantId,
-                description: _merchant.text.trim(),
-                note: _note.text,
-                paymentChannel: _channel,
-                splits: splits,
-                reminders: _reminders,
-                occurredAt: _occurredAt,
-                expectedBookGeneration: _bookGeneration,
-              );
-          return;
-        }
-        String? templateId;
-        Map<String, dynamic>? schedule;
-        if (template != null) {
-          final fields = {...template.fields, 'merchantId': merchantId};
-          templateId = await ref
-              .read(manualTemplateServiceProvider)
-              .save(template.name, fields);
-          schedule = Map<String, dynamic>.from(fields['schedule'] as Map);
-        }
-        final consumesDue =
-            schedule?['enabled'] == true &&
-            schedule?['nextDate'] == scheduledDate(_occurredAt);
-        final draft = TransactionDraft(
+      final service = ref.read(transactionFormServiceProvider);
+      final outcome = await service.submit(
+        TransactionFormValues(
           type: _type,
-          amount: money,
+          amountText: _amount.text,
           occurredAt: _occurredAt,
-          fromAccountId: _needsFrom ? _from : null,
-          toAccountId: _needsTo ? _to : null,
-          merchantId: merchantId,
-          description: _merchant.text.trim(),
+          from: _from,
+          to: _to,
+          merchantText: _merchant.text,
+          selectedMerchant: _selectedMerchant,
+          originalMerchantId: _originalMerchantId,
           note: _note.text,
-          paymentChannel: _channel,
-          splits: splits,
-          externalFingerprint: consumesDue
-              ? 'scheduled:$templateId:${scheduledDate(_occurredAt)}'
-              : null,
-          sourceReference: templateId,
-        );
-        final ledger = ref.read(ledgerServiceProvider);
-        final String id;
-        if (widget.editId != null) {
-          id = widget.editId!;
-          await ledger.update(
-            id,
-            draft,
-            expectedUpdatedAt: _editingUpdatedAt,
-            installmentCount: installments ? _installmentCount : null,
-            preserveInstallments: false,
-            firstInstallmentDate: _firstInstallmentDate ?? _occurredAt,
-          );
-        } else {
-          id = await ledger.create(draft);
-        }
-        if (installments && widget.editId == null) {
-          await ref
-              .read(installmentServiceProvider)
-              .attachPlan(
-                transactionId: id,
-                count: _installmentCount,
-                firstPeriod: _firstInstallmentDate ?? _occurredAt,
-              );
-        }
-        if (consumesDue &&
-            template != null &&
-            templateId != null &&
-            schedule != null) {
-          schedule['nextDate'] = scheduledDate(
-            nextScheduledDate(
-              parseScheduledDate(schedule['nextDate'] as String),
-              schedule,
-            ),
-          );
-          await ref.read(manualTemplateServiceProvider).save(template.name, {
-            ...template.fields,
-            'merchantId': merchantId,
-            'schedule': schedule,
-          }, id: templateId);
-        }
-      });
-      if (pendingPlan && _repeat != null && !installments) {
-        await ref.read(scheduledTemplateServiceProvider).processDue();
-      }
-      if ((pendingPlan && _reminders.enabled) ||
-          ((template?.fields['schedule'] as Map?)?['enabled'] == true &&
-              (template?.fields['reminders'] as Map?)?['enabled'] == true)) {
-        await _requestReminderPermission();
-      }
+          channel: _channel,
+          category: _category,
+          splitEnabled: _splitEnabled,
+          splits: [
+            for (final split in _splits)
+              (categoryId: split.categoryId, amountText: split.amount.text),
+          ],
+          pendingPlan: pendingPlan,
+          installments: installments,
+          installmentCount: _installmentCount,
+          firstInstallmentDate: _firstInstallmentDate,
+          repeat: _repeat,
+          reminders: _reminders,
+          editId: widget.editId,
+          editingUpdatedAt: _editingUpdatedAt,
+          bookGeneration: _bookGeneration,
+          template: template,
+        ),
+      );
+      if (outcome.requestReminderPermission) await _requestReminderPermission();
       if (!mounted) return;
-      final settings = ref.read(settingsProvider);
-      if (_from != null) {
-        await settings.write('last_from_${_type.name}', _from!);
-      }
-      if (_to != null) await settings.write('last_to_${_type.name}', _to!);
+      await service.rememberLastAccounts(type: _type, from: _from, to: _to);
       HapticFeedback.lightImpact();
       if (!mounted) return;
       if (_saveAnother) {
