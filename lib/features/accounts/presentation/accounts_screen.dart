@@ -194,7 +194,9 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         withoutMerchant: false,
       )),
     );
-    final cardProfile = ref.watch(creditCardProfileProvider(account.id));
+    final cardProfile = account.type == 'creditCard'
+        ? ref.watch(creditCardProfileProvider(account.id))
+        : null;
     final aliases = ref.watch(accountAliasesProvider(account.id));
     return ListView(
       padding: const EdgeInsets.all(16),
@@ -222,7 +224,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         if (account.type == 'creditCard')
           Builder(
             builder: (context) {
-              if (cardProfile.hasError) {
+              if (cardProfile!.hasError) {
                 return Text(
                   'No se pudo cargar la tarjeta: ${cardProfile.error}',
                 );
