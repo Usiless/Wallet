@@ -1,7 +1,5 @@
 # Privacidad
 
-**Estado 2026-10-07:** CSV/JSON retirados también de Flutter. Se conservan datos importados y backup cifrado; ver [entrega](IMPLEMENTATION_PLAN.md#traslado-autorizado-a-flutter--2026-10-07).
-
 Cabal está diseñada para funcionar sin cuenta, servidor, anuncios, analytics ni crash reporting remoto. La base vive en el sandbox privado de Android y el manifest desactiva backup automático y tráfico HTTP sin cifrar. Las funciones centrales no necesitan Internet.
 
 ## Datos y permisos

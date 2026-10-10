@@ -21,7 +21,7 @@ La definición ejecutable está en `lib/core/database/app_database.dart`; la hue
 - `notification_events`: sobre Android; texto crudo solo en diagnóstico y con vencimiento.
 - `payment_candidates`: propuesta extraída, confianza, cuentas sugeridas, huella y estado.
 - `dedup_decisions`: motivo auditable de creación, actualización o duplicado.
-- `import_batches`, `import_rows`: lotes y resultados históricos CSV conservados; ya no hay importación/exportación de producto.
+- `import_batches`, `import_rows`: lotes y resultados históricos CSV conservados; ya no hay importación/exportación de producto ni código de importación.
 - `audit_logs`: cambios locales de entidades financieras.
 - `app_settings`: preferencias y documentos versionados dentro de la base cifrada. Las plantillas manuales usan `manual_template:<id>`; las obligaciones de pago usan `pending_payment:v1:<id>`.
 
@@ -29,7 +29,7 @@ La programación de las plantillas de uso actual guarda sus campos y fecha ancla
 
 Las obligaciones conservan plan, número/cantidad de cuota, importe, vencimiento, descripción, cuenta sugerida, categorías exactas, recordatorios, revisión y pagos enlazados a transacciones reales. La creación de un plan no descuenta saldo. Confirmar un pago crea un gasto real transaccionalmente; un pago parcial conserva el resto o lo traslada a la siguiente cuota existente. La generación de restauración invalida formularios anteriores. El backup valida también la estructura y referencias de estos documentos; no se cambian tablas ni versión v1.
 
-La agenda de recordatorios Android es independiente del libro: almacenamiento cifrado con DeviceCrypto, alarmas inexactas y acciones para abrir la obligación. No escribe pagos ni necesita leer la base en segundo plano. Su validación de entrega en Android queda pendiente; consultar [el informe del traslado](evaluation/flutter-port-2026-10-07/REPORT.md).
+La agenda de recordatorios Android es independiente del libro: almacenamiento cifrado con DeviceCrypto, alarmas inexactas y acciones para abrir la obligación. No escribe pagos ni necesita leer la base en segundo plano. Su entrega real se verifica en el teléfono; ver el [roadmap](ROADMAP.md).
 
 ## Reglas de saldo
 
