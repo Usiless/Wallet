@@ -4,7 +4,6 @@ import 'package:go_router/go_router.dart';
 
 import '../features/accounts/presentation/accounts_screen.dart';
 import '../features/reports/presentation/analysis_screen.dart';
-import '../features/credit_cards/presentation/credit_cards_screen.dart';
 import '../features/dashboard/presentation/dashboard_screen.dart';
 import '../features/onboarding/presentation/onboarding_screen.dart';
 import '../features/pending_inbox/presentation/pending_inbox_screen.dart';
@@ -145,10 +144,6 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (context, state) => TemplatesScreen(
           scheduledOnly: state.uri.queryParameters['scheduled'] == 'true',
         ),
-      ),
-      GoRoute(
-        path: '/cards',
-        builder: (context, state) => const CreditCardsScreen(),
       ),
       GoRoute(
         path: '/inbox',
