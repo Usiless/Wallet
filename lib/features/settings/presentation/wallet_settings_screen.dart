@@ -112,18 +112,13 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
               ],
             ),
           ),
-        const Padding(
-          padding: EdgeInsets.all(16),
-          child: Text(
-            'Android concede acceso amplio a notificaciones. La app filtra Wallet y Google Play Services. '
-            'La captura queda en el dispositivo y se procesa al abrir o volver a la app. '
-            'Podés revocar el acceso en Android. Los movimientos registrados se conservan y la carga manual sigue disponible.',
-          ),
-        ),
         SwitchListTile(
           title: const Text('Detectar compras de Google Wallet'),
           value: _enabled ?? false,
-          onChanged: _enabled == null || _busy ? null : (v) => _save(v, _auto),
+          // Al apagar la detección el registro automático también se apaga.
+          onChanged: _enabled == null || _busy
+              ? null
+              : (v) => _save(v, v && _auto),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -138,14 +133,10 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
         ),
         SwitchListTile(
           title: const Text('Registrar automáticamente compras reconocidas'),
-          subtitle: const Text(
-            'Solo con cuenta y comercio únicos e importe válido. '
-            'Las compras nuevas o dudosas requieren confirmación. Desactivado inicialmente.',
-          ),
-          value: _auto,
-          onChanged: _enabled == null || _busy
-              ? null
-              : (v) => _save(_enabled!, v),
+          value: (_enabled ?? false) && _auto,
+          onChanged: (_enabled ?? false) && !_busy
+              ? (v) => _save(_enabled!, v)
+              : null,
         ),
       ],
     ),

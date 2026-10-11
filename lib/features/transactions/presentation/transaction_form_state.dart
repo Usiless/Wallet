@@ -213,6 +213,27 @@ final class TransactionFormState {
       type == TransactionType.expense &&
       (isCreditExpense(accounts) || pendingOn(accounts));
 
+  /// Importe aún sin dividir: importe menos la suma de divisiones (negativo si
+  /// hay excedente). Null si el importe principal no es válido. Las divisiones
+  /// vacías o inválidas cuentan como cero.
+  int? get splitRemainingMinor {
+    final int total;
+    try {
+      total = Money.parse(amountText).minorUnits;
+    } on FormatException {
+      return null;
+    }
+    var assigned = 0;
+    for (final split in splits) {
+      try {
+        assigned += Money.parse(split.amountText).minorUnits;
+      } on FormatException {
+        // Cuenta como cero hasta que el importe sea válido.
+      }
+    }
+    return total - assigned;
+  }
+
   /// Texto que identifica el borrador; si cambia respecto de [baseline] hay
   /// cambios sin guardar.
   String get draftSnapshot => jsonEncode([

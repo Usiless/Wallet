@@ -23,6 +23,7 @@ final class DashboardScreen extends ConsumerWidget {
       body: SafeArea(
         child: AsyncValueView(
           value: balances,
+          onRetry: () => ref.invalidate(accountBalancesProvider),
           data: (items) {
             final netWorth = items
                 .where((item) => item.includeInNetWorth)
@@ -81,9 +82,10 @@ final class DashboardScreen extends ConsumerWidget {
                 ListTile(
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Pendiente del mes'),
-                  subtitle: hasPaymentData
-                      ? MoneyText(monthPending)
-                      : const Text('—'),
+                  subtitle: _PaymentFigure(
+                    payments: payments,
+                    amount: hasPaymentData ? monthPending : null,
+                  ),
                   trailing: const Icon(Icons.chevron_right),
                   onTap: () => context.push('/payments'),
                 ),
@@ -91,9 +93,10 @@ final class DashboardScreen extends ConsumerWidget {
                   key: const ValueKey('overview-net-worth'),
                   contentPadding: EdgeInsets.zero,
                   title: const Text('Patrimonio total'),
-                  subtitle: hasPaymentData
-                      ? MoneyText(netWorth - totalPending)
-                      : const Text('—'),
+                  subtitle: _PaymentFigure(
+                    payments: payments,
+                    amount: hasPaymentData ? netWorth - totalPending : null,
+                  ),
                 ),
                 const SizedBox(height: 24),
                 if (stackPayments)
@@ -162,6 +165,39 @@ final class DashboardScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+/// Importe que depende de los pagos: indicador mientras carga, reintento si falla.
+final class _PaymentFigure extends ConsumerWidget {
+  const _PaymentFigure({required this.payments, required this.amount});
+
+  final AsyncValue<List<PendingPayment>> payments;
+  final int? amount;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    if (payments.hasError) {
+      return Wrap(
+        crossAxisAlignment: WrapCrossAlignment.center,
+        children: [
+          const Text('No se pudo cargar.'),
+          TextButton(
+            onPressed: () => ref.invalidate(pendingPaymentsProvider),
+            child: const Text('Reintentar'),
+          ),
+        ],
+      );
+    }
+    final value = amount;
+    if (value == null) {
+      return const SizedBox(
+        width: 20,
+        height: 20,
+        child: CircularProgressIndicator(strokeWidth: 2),
+      );
+    }
+    return MoneyText(value);
   }
 }
 

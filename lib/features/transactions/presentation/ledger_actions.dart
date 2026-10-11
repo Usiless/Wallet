@@ -3,93 +3,26 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../../shared/widgets/app_snack.dart';
+import '../data/ledger_service.dart';
 
 Future<void> showRefundDialog(
   BuildContext context,
   WidgetRef ref,
   TransactionRecord purchase,
 ) async {
-  final ledger = ref.read(ledgerServiceProvider);
-  final amount = TextEditingController();
-  final note = TextEditingController();
-  DateTime date = DateTime.now();
-  try {
-    final accepted = await showDialog<bool>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: const Text('Registrar devolución'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  purchase.description.isEmpty
-                      ? 'Compra original'
-                      : purchase.description,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: amount,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [PygInputFormatter()],
-                  decoration: const InputDecoration(labelText: 'Importe PYG'),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: note,
-                  decoration: const InputDecoration(labelText: 'Nota'),
-                ),
-                ListTile(
-                  title: const Text('Fecha de devolución'),
-                  subtitle: Text(
-                    MaterialLocalizations.of(context).formatShortDate(date),
-                  ),
-                  onTap: () async {
-                    final chosen = await showDatePicker(
-                      context: context,
-                      initialDate: date,
-                      firstDate: DateTime(2000),
-                      lastDate: DateTime.now(),
-                    );
-                    if (chosen != null && context.mounted) {
-                      update(() => date = chosen);
-                    }
-                  },
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Registrar'),
-            ),
-          ],
-        ),
-      ),
-    );
-    if (accepted != true) return;
-    await ledger.refund(
-      purchaseId: purchase.id,
-      amountMinor: Money.parse(amount.text).minorUnits,
-      occurredAt: date,
-      note: note.text,
-    );
-    if (context.mounted) showMessage(context, 'Devolución registrada.');
-  } catch (e) {
-    if (context.mounted) showError(context, e);
-  } finally {
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    amount.dispose();
-    note.dispose();
+  final refunded = await showDialog<bool>(
+    context: context,
+    builder: (_) => _RefundDialog(
+      purchase: purchase,
+      ledger: ref.read(ledgerServiceProvider),
+    ),
+  );
+  if (refunded == true && context.mounted) {
+    showMessage(context, 'Devolución registrada.');
   }
 }
 
@@ -99,79 +32,276 @@ Future<void> showReconcileDialog(
   AccountRecord account,
 ) async {
   final ledger = ref.read(ledgerServiceProvider);
-  final target = TextEditingController();
-  final note = TextEditingController();
-  bool negative = false;
   try {
     final current = await ledger.balance(account.id);
     if (!context.mounted) return;
-    final accepted = await showDialog<bool>(
+    final reconciled = await showDialog<bool>(
       context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, update) => AlertDialog(
-          title: Text('Conciliar · ${account.name}'),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text('Saldo registrado: ${Money(current).format()}'),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: target,
-                  keyboardType: TextInputType.number,
-                  inputFormatters: [PygInputFormatter()],
-                  decoration: InputDecoration(
-                    labelText: account.type == 'creditCard'
-                        ? 'Deuda real PYG'
-                        : 'Saldo real PYG',
-                  ),
+      builder: (_) =>
+          _ReconcileDialog(account: account, current: current, ledger: ledger),
+    );
+    if (reconciled == true && context.mounted) {
+      showMessage(context, 'Saldo conciliado.');
+    }
+  } catch (error) {
+    if (context.mounted) showError(context, error);
+  }
+}
+
+/// Importe requerido. Por defecto debe ser mayor que cero; con [allowZero]
+/// admite cero (saldo real 0 al conciliar), pero no negativo.
+String? _validateAmount(String? value, {bool allowZero = false}) {
+  if (value == null || value.trim().isEmpty) return 'Ingresá un importe.';
+  final int minor;
+  try {
+    minor = Money.parse(value).minorUnits;
+  } on FormatException {
+    return 'Ingresá un importe válido.';
+  }
+  if (allowZero) {
+    return minor >= 0 ? null : 'No puede ser negativo.';
+  }
+  return minor > 0 ? null : 'Debe ser mayor que cero.';
+}
+
+/// Guarda dentro del diálogo: si falla, el error queda visible y los datos
+/// siguen escritos.
+final class _RefundDialog extends StatefulWidget {
+  const _RefundDialog({required this.purchase, required this.ledger});
+
+  final TransactionRecord purchase;
+  final LedgerService ledger;
+
+  @override
+  State<_RefundDialog> createState() => _RefundDialogState();
+}
+
+class _RefundDialogState extends State<_RefundDialog> {
+  final _form = GlobalKey<FormState>();
+  final _amount = TextEditingController();
+  final _note = TextEditingController();
+  DateTime _date = DateTime.now();
+  bool _saving = false;
+  String? _error;
+
+  @override
+  void dispose() {
+    _amount.dispose();
+    _note.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    if (!_form.currentState!.validate()) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      await widget.ledger.refund(
+        purchaseId: widget.purchase.id,
+        amountMinor: Money.parse(_amount.text).minorUnits,
+        occurredAt: _date,
+        note: _note.text,
+      );
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = userMessage(error);
+        });
+      }
+    }
+  }
+
+  Future<void> _pickDate() async {
+    final chosen = await showDatePicker(
+      context: context,
+      initialDate: _date,
+      firstDate: DateTime(2000),
+      lastDate: DateTime.now(),
+    );
+    if (chosen != null && mounted) setState(() => _date = chosen);
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_saving,
+    child: AlertDialog(
+      title: const Text('Registrar devolución'),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                widget.purchase.description.isEmpty
+                    ? 'Compra original'
+                    : widget.purchase.description,
+              ),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _amount,
+                enabled: !_saving,
+                keyboardType: TextInputType.number,
+                inputFormatters: [PygInputFormatter()],
+                decoration: const InputDecoration(labelText: 'Importe PYG'),
+                validator: _validateAmount,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                controller: _note,
+                enabled: !_saving,
+                decoration: const InputDecoration(labelText: 'Nota'),
+              ),
+              ListTile(
+                title: const Text('Fecha de devolución'),
+                subtitle: Text(
+                  MaterialLocalizations.of(context).formatShortDate(_date),
                 ),
-                CheckboxListTile(
-                  contentPadding: EdgeInsets.zero,
-                  value: negative,
-                  onChanged: (v) => update(() => negative = v ?? false),
-                  title: Text(
-                    account.type == 'creditCard'
-                        ? 'Saldo a favor'
-                        : 'Saldo negativo',
-                  ),
+                onTap: _saving ? null : _pickDate,
+              ),
+              if (_error != null)
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
                 ),
-                TextField(
-                  controller: note,
-                  decoration: const InputDecoration(
-                    labelText: 'Motivo del ajuste',
-                  ),
-                ),
-              ],
-            ),
+            ],
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancelar'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Guardar ajuste'),
-            ),
-          ],
         ),
       ),
-    );
-    if (accepted != true) return;
-    final raw = Money.parse(target.text).minorUnits;
-    await ledger.reconcile(
-      accountId: account.id,
-      targetMinor: negative ? -raw : raw,
-      expectedBalance: current,
-      note: note.text,
-    );
-    if (context.mounted) showMessage(context, 'Saldo conciliado.');
-  } catch (e) {
-    if (context.mounted) showError(context, e);
-  } finally {
-    await Future<void>.delayed(const Duration(milliseconds: 300));
-    target.dispose();
-    note.dispose();
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: const Text('Registrar'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Guarda el ajuste dentro del diálogo, con la misma regla de error que la
+/// devolución.
+final class _ReconcileDialog extends StatefulWidget {
+  const _ReconcileDialog({
+    required this.account,
+    required this.current,
+    required this.ledger,
+  });
+
+  final AccountRecord account;
+  final int current;
+  final LedgerService ledger;
+
+  @override
+  State<_ReconcileDialog> createState() => _ReconcileDialogState();
+}
+
+class _ReconcileDialogState extends State<_ReconcileDialog> {
+  final _form = GlobalKey<FormState>();
+  final _target = TextEditingController();
+  final _note = TextEditingController();
+  bool _negative = false;
+  bool _saving = false;
+  String? _error;
+
+  bool get _isCard => widget.account.type == 'creditCard';
+
+  @override
+  void dispose() {
+    _target.dispose();
+    _note.dispose();
+    super.dispose();
   }
+
+  Future<void> _save() async {
+    if (!_form.currentState!.validate()) return;
+    setState(() {
+      _saving = true;
+      _error = null;
+    });
+    try {
+      final raw = Money.parse(_target.text).minorUnits;
+      await widget.ledger.reconcile(
+        accountId: widget.account.id,
+        targetMinor: _negative ? -raw : raw,
+        expectedBalance: widget.current,
+        note: _note.text,
+      );
+      if (mounted) Navigator.pop(context, true);
+    } catch (error) {
+      if (mounted) {
+        setState(() {
+          _saving = false;
+          _error = userMessage(error);
+        });
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => PopScope(
+    canPop: !_saving,
+    child: AlertDialog(
+      title: Text('Conciliar · ${widget.account.name}'),
+      content: SingleChildScrollView(
+        child: Form(
+          key: _form,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Saldo registrado: ${Money(widget.current).format()}'),
+              const SizedBox(height: 16),
+              TextFormField(
+                controller: _target,
+                enabled: !_saving,
+                keyboardType: TextInputType.number,
+                inputFormatters: [PygInputFormatter()],
+                decoration: InputDecoration(
+                  labelText: _isCard ? 'Deuda real PYG' : 'Saldo real PYG',
+                ),
+                validator: (value) => _validateAmount(value, allowZero: true),
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                value: _negative,
+                onChanged: _saving
+                    ? null
+                    : (v) => setState(() => _negative = v ?? false),
+                title: Text(_isCard ? 'Saldo a favor' : 'Saldo negativo'),
+              ),
+              TextFormField(
+                controller: _note,
+                enabled: !_saving,
+                decoration: const InputDecoration(
+                  labelText: 'Motivo del ajuste',
+                ),
+              ),
+              if (_error != null)
+                Text(
+                  _error!,
+                  style: TextStyle(color: Theme.of(context).colorScheme.error),
+                ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+          child: const Text('Cancelar'),
+        ),
+        FilledButton(
+          onPressed: _saving ? null : _save,
+          child: const Text('Guardar ajuste'),
+        ),
+      ],
+    ),
+  );
 }

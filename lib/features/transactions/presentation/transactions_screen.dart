@@ -4,12 +4,14 @@ import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../data/ledger_repository.dart';
 import 'ledger_actions.dart';
 import '../../../shared/widgets/async_value_view.dart';
-import '../../../shared/widgets/money_text.dart';
 import '../../../shared/widgets/movement_fab.dart';
+import 'active_filter_chips.dart';
 import 'movement_detail.dart';
+import 'movement_tile.dart';
 
 final class TransactionsScreen extends ConsumerStatefulWidget {
   const TransactionsScreen({
@@ -72,27 +74,42 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     setState(() {
       _filter = filter;
       _limit = 50;
-      _previousRows = [];
     });
+  }
+
+  void _removeFilter(FilterKind kind) {
+    if (kind == FilterKind.unclassified) _unclassified = false;
+    if (kind == FilterKind.withoutMerchant) _withoutMerchant = false;
+    if (kind == FilterKind.reportOnly) _reportOnly = false;
+    final f = _filter;
+    final period = kind == FilterKind.period;
+    _setFilter((
+      search: f.search,
+      account: kind == FilterKind.account ? null : f.account,
+      merchant: kind == FilterKind.merchant ? null : f.merchant,
+      category: kind == FilterKind.category ? null : f.category,
+      type: kind == FilterKind.type ? null : f.type,
+      start: period ? null : f.start,
+      end: period ? null : f.end,
+    ));
   }
 
   List<MovementRow> _previousRows = [];
 
   @override
   Widget build(BuildContext context) {
-    final transactions = ref.watch(
-      movementHistoryProvider((
-        filter: _filter,
-        limit: _limit + 1,
-        unclassified: _unclassified,
-        reportOnly: _reportOnly,
-        withoutMerchant: _withoutMerchant,
-      )),
+    final request = (
+      filter: _filter,
+      limit: _limit + 1,
+      unclassified: _unclassified,
+      reportOnly: _reportOnly,
+      withoutMerchant: _withoutMerchant,
     );
+    final transactions = ref.watch(movementHistoryProvider(request));
     if (transactions.hasValue) _previousRows = transactions.value!;
-    final display = transactions.isLoading && _previousRows.isNotEmpty
-        ? AsyncData(_previousRows)
-        : transactions;
+    // Filas del filtro anterior mientras llega el nuevo resultado: no se tocan.
+    final stale = transactions.isLoading && _previousRows.isNotEmpty;
+    final display = stale ? AsyncData(_previousRows) : transactions;
     return Scaffold(
       appBar: AppBar(
         actions: [
@@ -148,63 +165,77 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
               )),
             ),
           ),
-          if (_unclassified || _withoutMerchant)
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              child: Text(
-                [
-                  if (_unclassified) 'Sin categoría.',
-                  if (_withoutMerchant) 'Sin comercio asociado.',
-                ].join(' '),
-              ),
-            ),
+          ActiveFilterChips(
+            filter: _filter,
+            unclassified: _unclassified,
+            withoutMerchant: _withoutMerchant,
+            reportOnly: _reportOnly,
+            onRemove: _removeFilter,
+          ),
+          if (transactions.isLoading && _previousRows.isNotEmpty)
+            const LinearProgressIndicator(minHeight: 2),
           Expanded(
-            child: AsyncValueView(
-              value: display,
-              data: (rows) {
-                if (rows.isEmpty) {
-                  return const Center(
-                    child: Text('No hay movimientos para mostrar.'),
-                  );
-                }
-                return ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 96),
-                  itemCount: rows.length > _limit ? _limit + 1 : rows.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    if (index == _limit) {
-                      return Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: transactions.isLoading
-                            ? const Center(child: CircularProgressIndicator())
-                            : OutlinedButton(
-                                onPressed: () => setState(() => _limit += 50),
-                                child: const Text('Cargar 50 movimientos más'),
-                              ),
+            child: IgnorePointer(
+              ignoring: stale,
+              child: Opacity(
+                opacity: stale ? 0.5 : 1,
+                child: AsyncValueView(
+                  value: display,
+                  onRetry: () =>
+                      ref.invalidate(movementHistoryProvider(request)),
+                  data: (rows) {
+                    if (rows.isEmpty) {
+                      return const Center(
+                        child: Text('No hay movimientos para mostrar.'),
                       );
                     }
-                    return _MovementTile(
-                      row: rows[index].transaction,
-                      movement: rows[index],
-                      onDetail: () =>
-                          showMovementDetail(context, ref, rows[index]),
-                      onRefund: () => showRefundDialog(
-                        context,
-                        ref,
-                        rows[index].transaction,
-                      ),
-                      onEdit: () => context.push(
-                        '/transactions/new?edit=${rows[index].transaction.id}',
-                      ),
-                      onDelete: () =>
-                          _delete(context, ref, rows[index].transaction),
-                      onClone: () => context.push(
-                        '/transactions/new?clone=${rows[index].transaction.id}',
-                      ),
+                    return ListView.separated(
+                      padding: const EdgeInsets.only(bottom: 96),
+                      itemCount: rows.length > _limit
+                          ? _limit + 1
+                          : rows.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        if (index == _limit) {
+                          return Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: transactions.isLoading
+                                ? const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
+                                : OutlinedButton(
+                                    onPressed: () =>
+                                        setState(() => _limit += 50),
+                                    child: const Text(
+                                      'Cargar 50 movimientos más',
+                                    ),
+                                  ),
+                          );
+                        }
+                        return MovementTile(
+                          row: rows[index].transaction,
+                          movement: rows[index],
+                          onDetail: () =>
+                              showMovementDetail(context, ref, rows[index]),
+                          onRefund: () => showRefundDialog(
+                            context,
+                            ref,
+                            rows[index].transaction,
+                          ),
+                          onEdit: () => context.push(
+                            '/transactions/new?edit=${rows[index].transaction.id}',
+                          ),
+                          onDelete: () =>
+                              _delete(context, ref, rows[index].transaction),
+                          onClone: () => context.push(
+                            '/transactions/new?clone=${rows[index].transaction.id}',
+                          ),
+                        );
+                      },
                     );
                   },
-                );
-              },
+                ),
+              ),
             ),
           ),
         ],
@@ -250,14 +281,7 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
                   for (final c in categories) c.id: c.name,
                 }, (v) => category = v),
                 const SizedBox(height: 12),
-                _filterField('Tipo', type, {
-                  'purchases': 'Compras y devoluciones',
-                  'expense': 'Gasto',
-                  'income': 'Ingreso',
-                  'transfer': 'Transferencia',
-                  'refund': 'Devolución',
-                  'adjustment': 'Ajuste',
-                }, (v) => type = v),
+                _filterField('Tipo', type, filterTypeLabels, (v) => type = v),
                 ListTile(
                   title: const Text('Período'),
                   subtitle: Text(
@@ -347,7 +371,7 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
       await ledger.softDelete(row.id);
     } catch (error) {
       if (messenger.mounted) {
-        messenger.showSnackBar(SnackBar(content: Text('$error')));
+        messenger.showSnackBar(SnackBar(content: Text(userMessage(error))));
       }
       return;
     }
@@ -364,7 +388,9 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
               await ledger.restore(row.id);
             } catch (error) {
               if (messenger.mounted) {
-                messenger.showSnackBar(SnackBar(content: Text('$error')));
+                messenger.showSnackBar(
+                  SnackBar(content: Text(userMessage(error))),
+                );
               }
             }
           },
@@ -372,96 +398,4 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
       ),
     );
   }
-}
-
-final class _MovementTile extends StatelessWidget {
-  const _MovementTile({
-    required this.row,
-    required this.onDelete,
-    required this.onClone,
-    required this.onEdit,
-    required this.onRefund,
-    required this.movement,
-    required this.onDetail,
-  });
-
-  final TransactionRecord row;
-  final MovementRow movement;
-  final VoidCallback onDetail;
-  final VoidCallback onDelete;
-  final VoidCallback onClone;
-  final VoidCallback onEdit;
-  final VoidCallback onRefund;
-
-  @override
-  Widget build(BuildContext context) {
-    final signed = row.type == 'expense'
-        ? -movement.amountMinor
-        : row.type == 'income' || row.type == 'refund'
-        ? movement.amountMinor
-        : 0;
-    return ListTile(
-      onTap: onDetail,
-      leading: CircleAvatar(child: Icon(_icon(row.type))),
-      title: Text(row.description.isEmpty ? _label(row.type) : row.description),
-      subtitle: Text(
-        '${row.note == 'Registrado automáticamente' ? 'Automático · ' : ''}${movement.isQuota ? 'Cuota ${movement.number}/${movement.count}' : _label(row.type)} · ${movement.occurredAt.day}/${movement.occurredAt.month}/${movement.occurredAt.year}${movement.planned ? ' · Prevista' : ''}',
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          MoneyText(
-            signed == 0 ? movement.amountMinor : signed,
-            currencyCode: row.currencyCode,
-            signed: signed != 0,
-          ),
-          PopupMenuButton<String>(
-            onSelected: (value) {
-              if (value == 'refund') {
-                onRefund();
-              } else if (value == 'edit') {
-                onEdit();
-              } else if (value == 'clone') {
-                onClone();
-              } else {
-                onDelete();
-              }
-            },
-            itemBuilder: (context) => [
-              if (['income', 'expense', 'transfer'].contains(row.type))
-                PopupMenuItem(
-                  value: 'edit',
-                  child: Text(movement.isQuota ? 'Editar compra' : 'Editar'),
-                ),
-              if (row.type == 'expense' && !movement.isQuota)
-                const PopupMenuItem(
-                  value: 'refund',
-                  child: Text('Registrar devolución'),
-                ),
-              if (['income', 'expense', 'transfer'].contains(row.type))
-                const PopupMenuItem(value: 'clone', child: Text('Clonar')),
-              if (!movement.isQuota)
-                const PopupMenuItem(value: 'delete', child: Text('Eliminar')),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  IconData _icon(String type) => switch (type) {
-    'expense' => Icons.south_west,
-    'income' => Icons.north_east,
-    'transfer' => Icons.swap_horiz,
-    'refund' => Icons.replay,
-    _ => Icons.tune,
-  };
-
-  String _label(String type) => switch (type) {
-    'expense' => 'Gasto',
-    'income' => 'Ingreso',
-    'transfer' => 'Transferencia',
-    'refund' => 'Reembolso',
-    _ => 'Ajuste',
-  };
 }

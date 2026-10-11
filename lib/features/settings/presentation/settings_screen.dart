@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../../app/providers.dart';
 import '../../../core/config/feature_flags.dart';
 import '../../../core/backup/backup_codec.dart';
+import '../../../core/errors/user_message.dart';
 import '../../../core/security/app_lock_service.dart';
 import '../../../shared/widgets/text_prompt_dialog.dart';
 
@@ -142,7 +143,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       final changed = await service.setEnabled(value);
       if (changed && mounted) setState(() => _lock = value);
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
     } finally {
       if (mounted) {
         setState(() {
@@ -154,7 +155,10 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   }
 
   Future<void> _createBackup() async {
-    final password = await _passwordDialog('Contraseña para el backup');
+    final password = await _passwordDialog(
+      'Contraseña para el backup',
+      helper: 'Mínimo 8 caracteres. No puede recuperarse si la olvidás.',
+    );
     if (password == null || !mounted) return;
     setState(() => _busy = true);
     try {
@@ -163,7 +167,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
           .createWithPicker(password);
       if (saved) _message('Backup cifrado guardado.');
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
     } finally {
       if (mounted) {
         setState(() {
@@ -198,7 +202,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
       _message('Backup restaurado.');
       context.go('/start');
     } catch (error) {
-      _message('$error');
+      _message(userMessage(error));
     } finally {
       if (mounted) {
         setState(() {
@@ -209,14 +213,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
     }
   }
 
-  Future<String?> _passwordDialog(String title) => showTextPrompt(
-    context,
-    title: title,
-    label: 'Contraseña',
-    helper: 'Mínimo 8 caracteres. No puede recuperarse si la olvidás.',
-    confirmLabel: 'Continuar',
-    obscure: true,
-  );
+  Future<String?> _passwordDialog(String title, {String? helper}) =>
+      showTextPrompt(
+        context,
+        title: title,
+        label: 'Contraseña',
+        helper: helper,
+        confirmLabel: 'Continuar',
+        obscure: true,
+      );
 
   Future<bool> _confirmRestore(BackupSummary summary) async {
     return await showDialog<bool>(

@@ -154,8 +154,6 @@ class _CreateAccountDialogState extends State<_CreateAccountDialog> {
               controller: _aliases,
               decoration: const InputDecoration(
                 labelText: 'Alias enmascarados (opcional)',
-                helperText:
-                    'Separados por coma; nunca ingreses números completos.',
               ),
             ),
             if (_type == AccountType.creditCard) ...[

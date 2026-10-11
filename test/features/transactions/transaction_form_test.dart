@@ -365,7 +365,7 @@ void main() {
         isEmpty,
       );
     });
-    expect(find.textContaining('fallo de prueba'), findsOneWidget);
+    expect(find.text('No se pudo completar la operación.'), findsOneWidget);
     expect(tester.takeException(), isNull);
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pump();

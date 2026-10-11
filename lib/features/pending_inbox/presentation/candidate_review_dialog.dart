@@ -226,10 +226,6 @@ class _CandidateReviewDialogState extends ConsumerState<CandidateReviewDialog> {
                 ],
                 onChanged: (value) => setState(() => to = value),
               ),
-            if (walletPurchase) ...[
-              const SizedBox(height: 12),
-              const Text('Recordaremos el comercio, la cuenta y la categoría.'),
-            ],
             TextButton.icon(
               icon: const Icon(Icons.add),
               label: const Text('Crear cuenta'),

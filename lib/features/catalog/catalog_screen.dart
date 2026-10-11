@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
 import '../../shared/widgets/app_fab.dart';
+import '../../shared/widgets/async_value_view.dart';
 import '../../shared/widgets/text_prompt_dialog.dart';
 import '../../shared/widgets/app_snack.dart';
 
@@ -78,9 +79,9 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
             ),
           ),
           Expanded(
-            child: rows.when(
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (e, _) => Center(child: Text('$e')),
+            child: AsyncValueView(
+              value: rows,
+              onRetry: () => ref.invalidate(catalogProvider(_kind)),
               data: (items) {
                 final visible = items
                     .where(
@@ -101,6 +102,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
                   return const Center(child: Text('Sin elementos.'));
                 }
                 return ListView(
+                  padding: const EdgeInsets.only(bottom: 88),
                   children: [
                     for (final row in visible)
                       ListTile(
@@ -233,6 +235,24 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
               .setArchived(row.id, !row.isArchived);
         }
       } else if (action == 'delete') {
+        final accepted = await showDialog<bool>(
+          context: context,
+          builder: (dialog) => AlertDialog(
+            title: const Text('Eliminar alias'),
+            content: Text(_name(row)),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialog, false),
+                child: const Text('Cancelar'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(dialog, true),
+                child: const Text('Eliminar'),
+              ),
+            ],
+          ),
+        );
+        if (accepted != true || !mounted) return;
         if (row is AccountAliasRecord) {
           await ref.read(accountsServiceProvider).removeAlias(row.id);
         }

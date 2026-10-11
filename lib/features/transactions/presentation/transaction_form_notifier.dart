@@ -2,6 +2,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
+import '../../../core/errors/user_message.dart';
 import '../../payments/domain/pending_payment_models.dart';
 import '../../templates/manual_template_service.dart';
 import '../data/transaction_form_service.dart';
@@ -54,6 +55,10 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
       loading: loadsSomething,
     );
   }
+
+  /// Repite exactamente la carga que falló (movimiento, plantilla o
+  /// `useTemplate`), sin tocar lo demás.
+  Future<void> retryLoad() => _failedLoad?.call() ?? _start();
 
   Future<void> _start() async {
     if (!ref.mounted) return;
@@ -321,14 +326,23 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
 
   // --- cargas ---
 
-  Future<void> loadMovement(String id) async {
+  /// Última carga que falló; «Reintentar» la repite.
+  Future<void> Function()? _failedLoad;
+
+  /// Carga común: marca el estado de carga y, si falla, guarda [retry].
+  Future<void> _load(
+    Future<void> Function() body,
+    Future<void> Function() retry,
+  ) async {
     state = state.copyWith(loading: true, loadError: null);
+    _failedLoad = null;
     try {
-      final source = await ref.read(ledgerRepositoryProvider).loadForForm(id);
-      if (!ref.mounted) return;
-      state = state.withMovement(source);
+      await body();
     } catch (error) {
-      if (ref.mounted) state = state.copyWith(loadError: '$error');
+      if (ref.mounted) {
+        state = state.copyWith(loadError: userMessage(error));
+        _failedLoad = retry;
+      }
     } finally {
       if (ref.mounted) {
         state = state.copyWith(loading: false);
@@ -337,26 +351,27 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
     }
   }
 
-  Future<void> loadTemplate(String id, {required bool markClean}) async {
-    state = state.copyWith(loading: true, loadError: null);
-    try {
-      final template = await ref.read(manualTemplateServiceProvider).read(id);
-      if (template == null) throw StateError('La plantilla ya no existe.');
-      if (!ref.mounted) return;
-      final merchantId = template.fields['merchantId'] as String?;
-      final linked = merchantId == null
-          ? null
-          : await ref.read(merchantServiceProvider).find(merchantId);
-      if (!ref.mounted) return;
-      state = state.withTemplate(template, linked, markClean: markClean);
-    } catch (error) {
-      if (ref.mounted) state = state.copyWith(loadError: '$error');
-    } finally {
-      if (ref.mounted) {
-        state = state.copyWith(loading: false);
-        _normalize();
-      }
-    }
+  Future<void> loadMovement(String id) => _load(() async {
+    final source = await ref.read(ledgerRepositoryProvider).loadForForm(id);
+    if (!ref.mounted) return;
+    state = state.withMovement(source);
+  }, () => loadMovement(id));
+
+  Future<void> loadTemplate(String id, {required bool markClean}) => _load(
+    () => _loadTemplateInto(id, markClean: markClean),
+    () => loadTemplate(id, markClean: markClean),
+  );
+
+  Future<void> _loadTemplateInto(String id, {required bool markClean}) async {
+    final template = await ref.read(manualTemplateServiceProvider).read(id);
+    if (template == null) throw StateError('La plantilla ya no existe.');
+    if (!ref.mounted) return;
+    final merchantId = template.fields['merchantId'] as String?;
+    final linked = merchantId == null
+        ? null
+        : await ref.read(merchantServiceProvider).find(merchantId);
+    if (!ref.mounted) return;
+    state = state.withTemplate(template, linked, markClean: markClean);
   }
 
   /// Plantillas guardadas, primero las del tipo de movimiento actual.
@@ -381,7 +396,11 @@ class TransactionFormNotifier extends Notifier<TransactionFormState> {
       occurredAt: DateTime.now(),
       firstInstallmentDate: null,
     );
-    await loadTemplate(id, markClean: args.savedTemplateId != null);
+    final markClean = args.savedTemplateId != null;
+    await _load(
+      () => _loadTemplateInto(id, markClean: markClean),
+      () => useTemplate(id),
+    );
   }
 
   // --- guardado ---
