@@ -15,6 +15,7 @@ import '../../credit_cards/domain/credit_card_cycle.dart';
 import '../../../shared/widgets/app_fab.dart';
 import '../../../shared/widgets/app_snack.dart';
 import '../../transactions/presentation/history_link.dart';
+import '../../../shared/widgets/inline_progress.dart';
 
 final class AccountsScreen extends ConsumerStatefulWidget {
   const AccountsScreen({this.accountId, super.key});
@@ -449,11 +450,7 @@ final class _BalanceFigure extends StatelessWidget {
     if (balances.value == null) {
       return balances.hasError
           ? const Text('No se pudo cargar el saldo.')
-          : const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            );
+          : const InlineProgress();
     }
     final balance = _balanceRow(balances, account);
     if (balance == null) return const _UnavailableBalance();

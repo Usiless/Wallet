@@ -12,6 +12,7 @@ import '../../../shared/widgets/app_fab.dart';
 import 'budget_ring.dart';
 import '../../../shared/widgets/app_snack.dart';
 import '../../transactions/presentation/history_link.dart';
+import '../../../core/money/amount_validator.dart';
 
 final class BudgetsScreen extends ConsumerStatefulWidget {
   const BudgetsScreen({this.navigation, super.key});
@@ -377,12 +378,7 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
                     decoration: const InputDecoration(
                       labelText: 'Objetivo PYG',
                     ),
-                    validator: (v) {
-                      try {
-                        if (Money.parse(v ?? '').minorUnits > 0) return null;
-                      } catch (_) {}
-                      return 'Ingresá un importe mayor que cero.';
-                    },
+                    validator: validateAmount,
                   ),
                   const SizedBox(height: 12),
                   DropdownButtonFormField<String>(

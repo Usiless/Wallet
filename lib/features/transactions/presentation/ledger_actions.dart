@@ -8,6 +8,7 @@ import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../../shared/widgets/app_snack.dart';
 import '../data/ledger_service.dart';
+import '../../../core/money/amount_validator.dart';
 
 Future<void> showRefundDialog(
   BuildContext context,
@@ -46,22 +47,6 @@ Future<void> showReconcileDialog(
   } catch (error) {
     if (context.mounted) showError(context, error);
   }
-}
-
-/// Importe requerido. Por defecto debe ser mayor que cero; con [allowZero]
-/// admite cero (saldo real 0 al conciliar), pero no negativo.
-String? _validateAmount(String? value, {bool allowZero = false}) {
-  if (value == null || value.trim().isEmpty) return 'Ingresá un importe.';
-  final int minor;
-  try {
-    minor = Money.parse(value).minorUnits;
-  } on FormatException {
-    return 'Ingresá un importe válido.';
-  }
-  if (allowZero) {
-    return minor >= 0 ? null : 'No puede ser negativo.';
-  }
-  return minor > 0 ? null : 'Debe ser mayor que cero.';
 }
 
 /// Guarda dentro del diálogo: si falla, el error queda visible y los datos
@@ -148,7 +133,7 @@ class _RefundDialogState extends State<_RefundDialog> {
                 keyboardType: TextInputType.number,
                 inputFormatters: [PygInputFormatter()],
                 decoration: const InputDecoration(labelText: 'Importe PYG'),
-                validator: _validateAmount,
+                validator: validateAmount,
               ),
               const SizedBox(height: 12),
               TextFormField(
@@ -266,7 +251,7 @@ class _ReconcileDialogState extends State<_ReconcileDialog> {
                 decoration: InputDecoration(
                   labelText: _isCard ? 'Deuda real PYG' : 'Saldo real PYG',
                 ),
-                validator: (value) => _validateAmount(value, allowZero: true),
+                validator: (value) => validateAmount(value, allowZero: true),
               ),
               CheckboxListTile(
                 contentPadding: EdgeInsets.zero,

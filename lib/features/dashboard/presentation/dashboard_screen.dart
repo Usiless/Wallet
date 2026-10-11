@@ -9,6 +9,7 @@ import '../../../shared/widgets/movement_fab.dart';
 import '../../../shared/widgets/pending_count_badge.dart';
 import '../../transactions/domain/ledger_models.dart';
 import '../../payments/domain/pending_payment_models.dart';
+import '../../../shared/widgets/inline_progress.dart';
 
 final class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -191,11 +192,7 @@ final class _PaymentFigure extends ConsumerWidget {
     }
     final value = amount;
     if (value == null) {
-      return const SizedBox(
-        width: 20,
-        height: 20,
-        child: CircularProgressIndicator(strokeWidth: 2),
-      );
+      return const InlineProgress();
     }
     return MoneyText(value);
   }

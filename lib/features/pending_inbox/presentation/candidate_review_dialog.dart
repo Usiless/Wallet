@@ -7,6 +7,7 @@ import '../../../core/money/money.dart';
 import '../../../core/money/pyg_input_formatter.dart';
 import '../../accounts/presentation/create_account_dialog.dart';
 import '../../../shared/widgets/app_snack.dart';
+import '../../../core/money/amount_validator.dart';
 
 typedef CandidateReview = ({
   Money amount,
@@ -110,20 +111,8 @@ class _CandidateReviewDialogState extends ConsumerState<CandidateReviewDialog> {
                 labelText: 'Importe',
                 prefixText: '$currency ',
               ),
-              validator: (value) {
-                try {
-                  if (Money.parse(
-                        value ?? '',
-                        currencyCode: currency,
-                      ).minorUnits <=
-                      0) {
-                    return 'El importe debe ser mayor que cero.';
-                  }
-                } on FormatException {
-                  return 'Ingresá un importe válido.';
-                }
-                return null;
-              },
+              validator: (value) =>
+                  validateAmount(value, currencyCode: currency),
             ),
             const SizedBox(height: 16),
             if (walletPurchase) ...[

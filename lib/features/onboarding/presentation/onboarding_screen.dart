@@ -8,6 +8,7 @@ import '../../../core/security/app_lock_service.dart';
 import '../../accounts/data/accounts_service.dart';
 import '../../accounts/presentation/create_account_dialog.dart';
 import '../domain/onboarding_config.dart';
+import '../../../shared/widgets/inline_progress.dart';
 
 final class OnboardingScreen extends ConsumerStatefulWidget {
   const OnboardingScreen({super.key});
@@ -61,10 +62,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
                         ? () => setState(() => _step++)
                         : _finish,
                     child: _saving
-                        ? const SizedBox.square(
-                            dimension: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
+                        ? const InlineProgress()
                         : Text(_step < 2 ? 'Continuar' : 'Empezar'),
                   ),
                 ],

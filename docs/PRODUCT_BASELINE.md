@@ -2,6 +2,19 @@
 
 Decisiones asentadas hasta 2026-10-10. Este documento conserva las decisiones aprobadas y su contexto de autorización. El estado actual y las prioridades están en [ROADMAP.md](ROADMAP.md); los procedimientos, en [DEVELOPMENT.md](DEVELOPMENT.md).
 
+## Mejoras de UX · aprobación explícita 2026-10-10
+
+El usuario eligió las propuestas de la revisión de interfaz (P01–P04, P07, P09–P17, P20–P22), las verificó en Android («todo funciona») y autorizó la fusión. No cambian reglas financieras, almacenamiento ni backup.
+
+- **Errores:** mensajes legibles, sin tipo ni detalle técnico; los mensajes internos de Dart se sustituyen por «No se pudo completar la operación.» y se registran para diagnóstico. Las cargas fallidas ofrecen «Reintentar», que repite la carga que falló.
+- **Diálogos de dinero:** devolución y conciliación validan en el diálogo y, si el registro falla, muestran el error sin cerrar ni perder lo escrito. Conciliar admite saldo real 0. No se cierran mientras guardan.
+- **Saldos:** nunca se muestra el saldo inicial como actual; mientras carga hay indicador y, sin saldo calculado (cuentas archivadas), «—». Una tarjeta archivada conserva límite, fechas y mínimo.
+- **Movimientos:** cada filtro activo es un chip quitable de a uno, incluidos «Del reporte» y períodos abiertos («Desde…»/«Hasta…»). Los atajos de Cuentas, Presupuestos, Reportes y Catálogo abren la pestaña Movimientos con su filtro, que reemplaza el anterior; no se apila otra pantalla de Movimientos.
+- **Formularios:** al dividir entre categorías se muestra «Restante» o «Excedente». Un presupuesto nuevo se crea en el mes visible. Eliminar un alias pide confirmación.
+- **Presentación:** importes grandes se reducen en el detalle y en la fila de Movimientos en lugar de cortarse; el gráfico de tendencia tiene etiqueta accesible por mes; avisos breves tras confirmar pagos y administrar cuentas/plantillas; Reportes usa «Gastos netos»/«Gasto bruto», plurales y porcentajes locales.
+- **Wallet:** apagar la detección apaga también el registro automático.
+- **Textos:** se retiran también los explicativos de Onboarding, Wallet, Bandeja y alta de cuenta, incluida la advertencia sobre alias. Se conserva la ayuda de contraseña al crear un backup.
+
 ## Diseño revisado y aceptado · 2026-10-07
 
 El usuario dio por terminada la revisión del diseño («creo que ya está») y autorizó expresamente trasladarlo a Flutter/Dart, conservando las integraciones reales. Estas decisiones prevalecen sobre las presentaciones y exclusiones anteriores incompatibles y están implementadas en Flutter.
