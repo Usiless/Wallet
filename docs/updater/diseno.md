@@ -263,18 +263,13 @@ Textos mínimos (preferencia del proyecto): título «Versión X.Y.Z», notas en
 
 ## Cómo publicar una actualización
 
-1. Subir la versión en `pubspec.yaml` incrementando **siempre** el build number (p. ej. `1.2.0+5` → `1.3.0+6`). Android rechaza instalar un `versionCode` menor o igual al instalado.
-2. Compilar el APK de release firmado con **la misma keystore** de siempre (`android/key.properties`). Con otra firma, Android rechaza la actualización y obliga a desinstalar, lo que borra los datos locales.
-3. Generar el hash: `sha256sum app-release.apk > app-release.apk.sha256` (mismo directorio, para que el archivo contenga el nombre del APK).
-4. Crear la release en GitHub con tag `vX.Y.Z` (igual a la versión de `pubspec.yaml`, sin el `+build`), no marcada como borrador ni prerelease (`/releases/latest` las ignora). Las notas van en la descripción.
-5. Adjuntar `app-release.apk` y `app-release.apk.sha256`.
-
-Ejemplo con `gh`:
-
 ```bash
-flutter build apk --release
-cd build/app/outputs/flutter-apk
-sha256sum app-release.apk > app-release.apk.sha256
-gh release create v1.3.0 app-release.apk app-release.apk.sha256 \
-  --repo Usiless/Wallet --title "v1.3.0" --notes-file NOTAS.md
+tool/release.sh 1.3.0 "Notas de la versión"
 ```
+
+El script exige `master` limpio e igual a `origin/master`, `android/key.properties` y `gh` con sesión iniciada. Corre `flutter analyze` y `flutter test`, pone `1.3.0+<build anterior + 1>` en `pubspec.yaml`, compila el APK de release, verifica versión y que no esté firmado con la clave de debug, genera `build/releases/cabal-1.3.0.apk` con su `.sha256`, hace commit y push, y crea la release `v1.3.0` apuntando a ese commit. Con `--prueba` al final hace todo hasta el APK y el hash, sin commit, push ni release, y deja `pubspec.yaml` como estaba.
+
+Reglas que el script asume:
+
+- La firma es siempre la misma keystore. Con otra, Android rechaza la actualización y obliga a desinstalar, lo que borra los datos locales. Por lo mismo, un build de debug instalado desde VSCodium no recibe actualizaciones.
+- `/releases/latest` ignora borradores y prereleases.
