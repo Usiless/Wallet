@@ -75,6 +75,7 @@ Estas decisiones sustituyen las propuestas anteriores incompatibles. Este interc
 - Cada usuario ingresa sus propias cuentas, nombres, saldos y datos de tarjeta. No se precargan bancos ni alias personales.
 - La configuración puede terminar sin cuentas; se necesita una para registrar movimientos.
 - Los datos y cálculos centrales quedan en el dispositivo, sin cuenta de usuario ni servidor.
+- **Actualizaciones · 2026-10-11:** la app declara `INTERNET` y `REQUEST_INSTALL_PACKAGES` solo para el actualizador. La consulta a las releases públicas de GitHub (`Usiless/Wallet`, sin token) ocurre únicamente cuando el usuario toca «Buscar actualizaciones» en Ajustes; no hay verificación al iniciar ni en segundo plano. No se envían datos del usuario. Detalle en `docs/updater/diseno.md`.
 - La base activa y la cola se cifran con una clave automática protegida por Android Keystore; no se pide otra contraseña al abrir. El backup portable conserva su contraseña independiente.
 - La restauración reemplaza todos los datos por los del backup tras validar integridad, esquema y referencias. Guarda un respaldo cifrado previo, usa rollback transaccional ante fallos y no requiere cerrar/reabrir la app.
 - PYG es la moneda inicial soportada por la interfaz; los importes se almacenan como enteros. Los campos de propuestas, movimientos nuevos y divisiones muestran separadores de miles mientras se escribe.
