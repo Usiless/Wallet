@@ -259,7 +259,7 @@ Textos mínimos (preferencia del proyecto): título «Versión X.Y.Z», notas en
 - *Ronda 2 de revisión*: cancelar durante el cálculo del SHA-256 todavía devolvía el archivo y abría el instalador. Se corrige con un chequeo de cancelación después de recibir, después de verificar y antes de renombrar. La lectura de caché aplica las mismas validaciones de nombre/`https`, y un `.sha256` descartado se registra en el log.
 - *Ronda 3 de revisión*: convergió. Residual aceptado (menor): si «Cancelar» llega entre el `rename` y el `return` (milisegundos de I/O), el flujo sigue e Android muestra su propio diálogo de instalación, que el usuario igual puede rechazar.
 - *Estado final*: `flutter analyze` sin errores ni warnings (2 infos); `flutter test` 440 pruebas OK (37 del actualizador); `flutter build apk --debug` compila (incluye Kotlin, manifest y FileProvider).
-- *Pendiente fuera del código*: el repo `Usiless/Wallet` tiene que ser público para que la API responda sin token; mientras sea privado, la consulta devuelve 404 y la app informa «Ya tenés la última versión.». Sin prueba en dispositivo real del flujo completo de instalación.
+- *Pendiente fuera del código*: sin prueba en dispositivo real del flujo completo de instalación.
 
 ## Cómo publicar una actualización
 
