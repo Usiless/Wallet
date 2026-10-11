@@ -8,6 +8,7 @@ import '../../../core/backup/backup_codec.dart';
 import '../../../core/errors/user_message.dart';
 import '../../../core/security/app_lock_service.dart';
 import '../../../shared/widgets/text_prompt_dialog.dart';
+import '../../updater/presentation/update_flow.dart';
 
 final class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({this.backups = false, super.key});
@@ -21,6 +22,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
   bool? _lock;
   var _busy = false;
   String? _progress;
+  var _checkingUpdates = false;
 
   @override
   void initState() {
@@ -121,6 +123,11 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               const Divider(),
             ],
             ListTile(
+              leading: const Icon(Icons.system_update_outlined),
+              title: const Text('Buscar actualizaciones'),
+              onTap: _checkingUpdates ? null : _checkUpdates,
+            ),
+            ListTile(
               leading: const Icon(Icons.info_outline),
               title: const Text('Información de la aplicación'),
               onTap: () => showLicensePage(
@@ -134,6 +141,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
         ],
       ),
     );
+  }
+
+  Future<void> _checkUpdates() async {
+    setState(() => _checkingUpdates = true);
+    try {
+      await checkForUpdates(context, ref);
+    } finally {
+      if (mounted) setState(() => _checkingUpdates = false);
+    }
   }
 
   Future<void> _setLock(bool value) async {

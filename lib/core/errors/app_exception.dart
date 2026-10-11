@@ -15,3 +15,19 @@ final class ValidationException extends AppException {
 final class BackupException extends AppException {
   const BackupException(super.message, {super.technicalDetail});
 }
+
+enum UpdateFailure {
+  offline,
+  rateLimited,
+  server,
+  download,
+  integrity,
+  cancelled,
+  installer,
+}
+
+final class UpdateException extends AppException {
+  const UpdateException(this.failure, super.message, {super.technicalDetail});
+
+  final UpdateFailure failure;
+}
