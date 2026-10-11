@@ -54,6 +54,24 @@ class MainActivity : FlutterActivity() {
                 else -> result.notImplemented()
             }
         }
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "finanzas_locales/updater").setMethodCallHandler { call, result ->
+            try {
+                when (call.method) {
+                    "canInstall" -> result.success(UpdateInstaller.canInstall(this))
+                    "openInstallSettings" -> {
+                        UpdateInstaller.openInstallSettings(this)
+                        result.success(null)
+                    }
+                    "install" -> {
+                        UpdateInstaller.install(this, call.argument<String>("path") ?: "")
+                        result.success(null)
+                    }
+                    else -> result.notImplemented()
+                }
+            } catch (failure: UpdateInstaller.Failure) {
+                result.error(failure.code, failure.message, null)
+            }
+        }
         val reminderWorker = ReminderWorker { reply -> runOnUiThread(reply) }
         this.reminderWorker = reminderWorker
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "finanzas_locales/payment_reminders").setMethodCallHandler { call, result ->
