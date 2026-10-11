@@ -115,7 +115,10 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
         SwitchListTile(
           title: const Text('Detectar compras de Google Wallet'),
           value: _enabled ?? false,
-          onChanged: _enabled == null || _busy ? null : (v) => _save(v, _auto),
+          // Al apagar la detección el registro automático también se apaga.
+          onChanged: _enabled == null || _busy
+              ? null
+              : (v) => _save(v, v && _auto),
         ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -130,7 +133,7 @@ class _WalletSettingsScreenState extends ConsumerState<WalletSettingsScreen> {
         ),
         SwitchListTile(
           title: const Text('Registrar automáticamente compras reconocidas'),
-          value: _auto,
+          value: (_enabled ?? false) && _auto,
           onChanged: (_enabled ?? false) && !_busy
               ? (v) => _save(_enabled!, v)
               : null,

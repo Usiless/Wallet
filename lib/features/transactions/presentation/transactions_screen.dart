@@ -80,6 +80,7 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
   void _removeFilter(FilterKind kind) {
     if (kind == FilterKind.unclassified) _unclassified = false;
     if (kind == FilterKind.withoutMerchant) _withoutMerchant = false;
+    if (kind == FilterKind.reportOnly) _reportOnly = false;
     final f = _filter;
     final period = kind == FilterKind.period;
     _setFilter((
@@ -106,9 +107,9 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
     );
     final transactions = ref.watch(movementHistoryProvider(request));
     if (transactions.hasValue) _previousRows = transactions.value!;
-    final display = transactions.isLoading && _previousRows.isNotEmpty
-        ? AsyncData(_previousRows)
-        : transactions;
+    // Filas del filtro anterior mientras llega el nuevo resultado: no se tocan.
+    final stale = transactions.isLoading && _previousRows.isNotEmpty;
+    final display = stale ? AsyncData(_previousRows) : transactions;
     return Scaffold(
       appBar: AppBar(
         actions: [
@@ -168,58 +169,73 @@ class _TransactionsScreenState extends ConsumerState<TransactionsScreen> {
             filter: _filter,
             unclassified: _unclassified,
             withoutMerchant: _withoutMerchant,
+            reportOnly: _reportOnly,
             onRemove: _removeFilter,
           ),
           if (transactions.isLoading && _previousRows.isNotEmpty)
             const LinearProgressIndicator(minHeight: 2),
           Expanded(
-            child: AsyncValueView(
-              value: display,
-              onRetry: () => ref.invalidate(movementHistoryProvider(request)),
-              data: (rows) {
-                if (rows.isEmpty) {
-                  return const Center(
-                    child: Text('No hay movimientos para mostrar.'),
-                  );
-                }
-                return ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 96),
-                  itemCount: rows.length > _limit ? _limit + 1 : rows.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    if (index == _limit) {
-                      return Padding(
-                        padding: const EdgeInsets.all(16),
-                        child: transactions.isLoading
-                            ? const Center(child: CircularProgressIndicator())
-                            : OutlinedButton(
-                                onPressed: () => setState(() => _limit += 50),
-                                child: const Text('Cargar 50 movimientos más'),
-                              ),
+            child: IgnorePointer(
+              ignoring: stale,
+              child: Opacity(
+                opacity: stale ? 0.5 : 1,
+                child: AsyncValueView(
+                  value: display,
+                  onRetry: () =>
+                      ref.invalidate(movementHistoryProvider(request)),
+                  data: (rows) {
+                    if (rows.isEmpty) {
+                      return const Center(
+                        child: Text('No hay movimientos para mostrar.'),
                       );
                     }
-                    return MovementTile(
-                      row: rows[index].transaction,
-                      movement: rows[index],
-                      onDetail: () =>
-                          showMovementDetail(context, ref, rows[index]),
-                      onRefund: () => showRefundDialog(
-                        context,
-                        ref,
-                        rows[index].transaction,
-                      ),
-                      onEdit: () => context.push(
-                        '/transactions/new?edit=${rows[index].transaction.id}',
-                      ),
-                      onDelete: () =>
-                          _delete(context, ref, rows[index].transaction),
-                      onClone: () => context.push(
-                        '/transactions/new?clone=${rows[index].transaction.id}',
-                      ),
+                    return ListView.separated(
+                      padding: const EdgeInsets.only(bottom: 96),
+                      itemCount: rows.length > _limit
+                          ? _limit + 1
+                          : rows.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        if (index == _limit) {
+                          return Padding(
+                            padding: const EdgeInsets.all(16),
+                            child: transactions.isLoading
+                                ? const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
+                                : OutlinedButton(
+                                    onPressed: () =>
+                                        setState(() => _limit += 50),
+                                    child: const Text(
+                                      'Cargar 50 movimientos más',
+                                    ),
+                                  ),
+                          );
+                        }
+                        return MovementTile(
+                          row: rows[index].transaction,
+                          movement: rows[index],
+                          onDetail: () =>
+                              showMovementDetail(context, ref, rows[index]),
+                          onRefund: () => showRefundDialog(
+                            context,
+                            ref,
+                            rows[index].transaction,
+                          ),
+                          onEdit: () => context.push(
+                            '/transactions/new?edit=${rows[index].transaction.id}',
+                          ),
+                          onDelete: () =>
+                              _delete(context, ref, rows[index].transaction),
+                          onClone: () => context.push(
+                            '/transactions/new?clone=${rows[index].transaction.id}',
+                          ),
+                        );
+                      },
                     );
                   },
-                );
-              },
+                ),
+              ),
             ),
           ),
         ],

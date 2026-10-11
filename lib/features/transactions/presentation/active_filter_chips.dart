@@ -23,6 +23,22 @@ enum FilterKind {
   period,
   unclassified,
   withoutMerchant,
+  reportOnly,
+}
+
+/// Etiqueta del período: rango completo, solo inicio o solo fin.
+String _periodLabel(
+  MaterialLocalizations localizations,
+  DateTime? start,
+  DateTime? end,
+) {
+  final last = end?.subtract(const Duration(days: 1));
+  if (start != null && last != null) {
+    return '${localizations.formatShortDate(start)} – '
+        '${localizations.formatShortDate(last)}';
+  }
+  if (start != null) return 'Desde ${localizations.formatShortDate(start)}';
+  return 'Hasta ${localizations.formatShortDate(last!)}';
 }
 
 /// Chips de los filtros activos con el nombre legible de cada uno.
@@ -32,11 +48,12 @@ final class ActiveFilterChips extends ConsumerWidget {
     required this.unclassified,
     required this.withoutMerchant,
     required this.onRemove,
+    this.reportOnly = false,
     super.key,
   });
 
   final HistoryFilter filter;
-  final bool unclassified, withoutMerchant;
+  final bool unclassified, withoutMerchant, reportOnly;
   final ValueChanged<FilterKind> onRemove;
 
   @override
@@ -67,14 +84,11 @@ final class ActiveFilterChips extends ConsumerWidget {
         ),
       if (filter.type case final type?)
         (FilterKind.type, filterTypeLabels[type] ?? 'Tipo'),
-      if (start != null && end != null)
-        (
-          FilterKind.period,
-          '${localizations.formatShortDate(start)} – '
-              '${localizations.formatShortDate(end.subtract(const Duration(days: 1)))}',
-        ),
+      if (start != null || end != null)
+        (FilterKind.period, _periodLabel(localizations, start, end)),
       if (unclassified) (FilterKind.unclassified, 'Sin categoría'),
       if (withoutMerchant) (FilterKind.withoutMerchant, 'Sin comercio'),
+      if (reportOnly) (FilterKind.reportOnly, 'Del reporte'),
     ];
     if (chips.isEmpty) return const SizedBox.shrink();
     return Padding(

@@ -216,13 +216,14 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
         if (account.type == 'creditCard')
           Builder(
             builder: (context) {
+              // El error de saldos ya lo muestra el saldo de arriba.
               if (balances.value == null) {
                 return balances.hasError
-                    ? const Text('No se pudo cargar el saldo.')
+                    ? const SizedBox.shrink()
                     : const LinearProgressIndicator();
               }
+              // Sin fila de saldo (archivada) solo el crédito disponible queda «—».
               final balance = _balanceRow(balances, account);
-              if (balance == null) return const _UnavailableBalance();
               if (cardProfile!.hasError) {
                 return const Text('No se pudo cargar la tarjeta.');
               }
@@ -243,12 +244,14 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
                   ),
                   ListTile(
                     title: const Text('Crédito disponible'),
-                    subtitle: MoneyText(
-                      const CreditCardCycleCalculator().availableCredit(
-                        creditLimitMinor: profile.creditLimitMinor,
-                        debtMinor: balance,
-                      ),
-                    ),
+                    subtitle: balance == null
+                        ? const _UnavailableBalance()
+                        : MoneyText(
+                            const CreditCardCycleCalculator().availableCredit(
+                              creditLimitMinor: profile.creditLimitMinor,
+                              debtMinor: balance,
+                            ),
+                          ),
                   ),
                   Text(
                     'Próximo cierre: ${MaterialLocalizations.of(context).formatShortDate(dates.nextClosing)}',

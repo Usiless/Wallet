@@ -1,4 +1,4 @@
-# Plan de mejoras UX · v1.2 · 2026-10-10
+# Plan de mejoras UX · v1.3 · 2026-10-10
 
 Worktree: `/home/ulises/Escritorio/Tests/Wallet-ux` · rama `feature/mejoras-ux` · base `7b9ac8e` (master analizado). Línea base: `flutter analyze` sin avisos, 370 pruebas pasan.
 
@@ -166,3 +166,24 @@ Globales: G1 (`flutter analyze` sin avisos, suite completa pasa). Sin cambios de
 
 - T19–T21 aprobadas: diff del servicio limitado al catch; extracciones mecánicas sin cambios en pruebas existentes. Pantallas: transactions_screen 385, transaction_form_screen 489.
 - `flutter analyze` sin avisos; `flutter test` 392 pasan.
+
+## v1.3 · Correcciones del code review previo a la fusión (responsable H2)
+
+| ID | Archivos | Criterios |
+|----|----------|-----------|
+| T22 | `transaction_form_notifier.dart` (+ pantalla si hace falta) | C22a «Reintentar» repite exactamente la carga que falló (movimiento, plantilla guardada o `useTemplate(id)` con el mismo id); nunca recarga el movimiento editado ni pisa cambios si lo que falló fue la plantilla. Prueba de notifier/widget: falla `useTemplate` una vez → reintentar aplica la plantilla y no llama a la carga del movimiento. |
+| T23 | `accounts_screen.dart` | C23a Tarjeta archivada sin fila de saldo: se muestran límite, próximo cierre, vencimiento y mínimo; solo las cifras que dependen del saldo (crédito disponible) muestran «—». C23b El error de saldos no se repite dos veces en el detalle. Prueba de widget para C23a. |
+| T24 | `wallet_settings_screen.dart` | C24a Apagar «Detectar compras» guarda también registro automático = false; el interruptor queda apagado y deshabilitado. Prueba. |
+| T25 | `active_filter_chips.dart`, `transactions_screen.dart` | C25a Chip para `reportOnly` («Del reporte») y para período con solo inicio («Desde …») o solo fin («Hasta …»); cada uno se quita de a uno. Prueba. |
+| T26 | `transactions_screen.dart` | C26a Mientras se cargan resultados de un filtro nuevo y se muestran filas anteriores, la lista no admite interacción (p. ej. `IgnorePointer`) y se atenúa. |
+
+Globales: G1. Sin cambios de servicios ni del formato guardado.
+- T22 (v1.3, H2): hecho. `retryLoad` repite la carga que falló (movimiento, plantilla o `useTemplate`); prueba `test/features/transactions/template_retry_test.dart`.
+- T23 (v1.3, H2): hecho. Tarjeta archivada sin fila de saldo muestra límite y fechas, y solo «Crédito disponible» queda «—»; el error de saldos aparece una vez. Pruebas `test/features/accounts/archived_card_detail_test.dart`.
+- T24 (v1.3, H2): hecho. Apagar «Detectar» guarda registro automático en falso y el interruptor queda apagado y deshabilitado; prueba en `test/features/settings/wallet_auto_switch_test.dart`.
+- T25 (v1.3, H2): hecho. Chips «Del reporte», «Desde …» y «Hasta …», quitables de a uno; pruebas en `test/features/transactions/transactions_filter_chips_test.dart`.
+- T26 (v1.3, H2): hecho. Mientras llega un filtro nuevo, la lista anterior queda con `IgnorePointer` y atenuada; prueba en `transactions_filter_chips_test.dart`.
+
+## Revisión de Opus v1.3 · aprobada
+
+- T22–T26 aprobadas. `flutter analyze` sin avisos; `flutter test` 399 pasan. Fusión en master autorizada por el usuario.
