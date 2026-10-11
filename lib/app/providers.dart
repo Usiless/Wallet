@@ -20,6 +20,8 @@ import '../features/transactions/data/ledger_repository.dart';
 import '../features/transactions/data/ledger_service.dart';
 import '../features/transactions/data/transaction_form_service.dart';
 import '../features/transactions/domain/ledger_models.dart';
+import '../features/updater/data/apk_installer.dart';
+import '../features/updater/data/update_service.dart';
 
 final databaseProvider = Provider<AppDatabase>((ref) {
   throw StateError('databaseProvider debe configurarse en main().');
@@ -97,6 +99,12 @@ final onboardingServiceProvider = Provider(
 final backupServiceProvider = Provider(
   (ref) => BackupService(ref.watch(databaseProvider)),
 );
+final updateServiceProvider = Provider((ref) {
+  final service = UpdateService(settings: ref.watch(settingsProvider));
+  ref.onDispose(service.close);
+  return service;
+});
+final apkInstallerProvider = Provider((ref) => const ApkInstaller());
 final nativeNotificationBridgeProvider = Provider(
   (ref) => const NativeNotificationBridge(),
 );
