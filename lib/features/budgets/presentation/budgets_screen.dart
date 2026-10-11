@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/database/app_database.dart';
@@ -12,6 +11,7 @@ import '../domain/budget_service.dart';
 import '../../../shared/widgets/app_fab.dart';
 import 'budget_ring.dart';
 import '../../../shared/widgets/app_snack.dart';
+import '../../transactions/presentation/history_link.dart';
 
 final class BudgetsScreen extends ConsumerStatefulWidget {
   const BudgetsScreen({this.navigation, super.key});
@@ -280,24 +280,19 @@ class _BudgetsScreenState extends ConsumerState<BudgetsScreen> {
               FilledButton(
                 onPressed: () {
                   Navigator.pop(sheet);
-                  context.push(
-                    Uri(
-                      path: '/transactions',
-                      queryParameters: {
-                        'start': DateTime(
-                          month.year,
-                          month.month,
-                        ).toIso8601String(),
-                        'end': DateTime(
-                          month.year,
-                          month.month + 1,
-                        ).toIso8601String(),
-                        'type': 'purchases',
-                        if (budget.categoryId != null)
-                          'category': budget.categoryId!,
-                      },
-                    ).toString(),
-                  );
+                  openHistory(context, {
+                    'start': DateTime(
+                      month.year,
+                      month.month,
+                    ).toIso8601String(),
+                    'end': DateTime(
+                      month.year,
+                      month.month + 1,
+                    ).toIso8601String(),
+                    'type': 'purchases',
+                    if (budget.categoryId != null)
+                      'category': budget.categoryId!,
+                  });
                 },
                 child: const Text('Ver movimientos'),
               ),

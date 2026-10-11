@@ -14,6 +14,7 @@ import '../../transactions/presentation/movement_detail.dart';
 import '../../credit_cards/domain/credit_card_cycle.dart';
 import '../../../shared/widgets/app_fab.dart';
 import '../../../shared/widgets/app_snack.dart';
+import '../../transactions/presentation/history_link.dart';
 
 final class AccountsScreen extends ConsumerStatefulWidget {
   const AccountsScreen({this.accountId, super.key});
@@ -303,8 +304,7 @@ class _AccountsScreenState extends ConsumerState<AccountsScreen> {
           runSpacing: 8,
           children: [
             OutlinedButton(
-              onPressed: () =>
-                  context.push('/transactions?account=${account.id}'),
+              onPressed: () => openHistory(context, {'account': account.id}),
               child: const Text('Ver movimientos'),
             ),
             OutlinedButton(

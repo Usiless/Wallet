@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 
 import '../../app/providers.dart';
 import '../../core/database/app_database.dart';
@@ -8,6 +7,7 @@ import '../../shared/widgets/app_fab.dart';
 import '../../shared/widgets/async_value_view.dart';
 import '../../shared/widgets/text_prompt_dialog.dart';
 import '../../shared/widgets/app_snack.dart';
+import '../transactions/presentation/history_link.dart';
 
 final catalogProvider = StreamProvider.autoDispose.family<List<Object>, String>(
   (ref, kind) {
@@ -127,9 +127,7 @@ class _CatalogScreenState extends ConsumerState<CatalogScreen> {
                           _ => '',
                         }),
                         onTap: row is MerchantRecord
-                            ? () => context.push(
-                                '/transactions?merchant=${row.id}',
-                              )
+                            ? () => openHistory(context, {'merchant': row.id})
                             : null,
                         trailing: PopupMenuButton<String>(
                           onSelected: (action) => _action(row, action),

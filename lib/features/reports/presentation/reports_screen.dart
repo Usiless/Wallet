@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:go_router/go_router.dart';
 import 'package:intl/intl.dart';
 
 import '../../../app/providers.dart';
@@ -8,6 +7,7 @@ import '../../../core/money/money.dart';
 import '../../../shared/widgets/money_text.dart';
 import '../data/report_service.dart';
 import 'trend_chart.dart';
+import '../../transactions/presentation/history_link.dart';
 
 final reportAnalysisProvider = StreamProvider.autoDispose
     .family<ReportAnalysis, AnalysisRequest>(
@@ -504,9 +504,7 @@ class _ReportsScreenState extends ConsumerState<ReportsScreen> {
       parameters.remove('category');
       parameters['unclassified'] = 'true';
     }
-    context.push(
-      Uri(path: '/transactions', queryParameters: parameters).toString(),
-    );
+    openHistory(context, parameters);
   }
 
   Future<void> _period() async {

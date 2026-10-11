@@ -52,28 +52,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           ),
           StatefulShellBranch(
             routes: [
-              GoRoute(
-                path: '/transactions',
-                builder: (context, state) => TransactionsScreen(
-                  account: state.uri.queryParameters['account'],
-                  merchant: state.uri.queryParameters['merchant'],
-                  category: state.uri.queryParameters['category'],
-                  type: state.uri.queryParameters['type'],
-                  reportOnly: state.uri.queryParameters['report'] == 'true',
-                  withoutMerchant:
-                      state.uri.queryParameters['withoutMerchant'] == 'true',
-                  start: DateTime.tryParse(
-                    state.uri.queryParameters['start'] ?? '',
-                  ),
-                  end: DateTime.tryParse(
-                    state.uri.queryParameters['end'] ?? '',
-                  ),
-                  quotaPeriod:
-                      state.uri.queryParameters['quotaPeriod'] == 'true',
-                  unclassified:
-                      state.uri.queryParameters['unclassified'] == 'true',
-                ),
-              ),
+              GoRoute(path: '/transactions', builder: transactionsRouteBuilder),
             ],
           ),
           StatefulShellBranch(
@@ -263,5 +242,24 @@ final class _AppShell extends StatelessWidget {
         ),
       );
     },
+  );
+}
+
+/// Movimientos filtrados por la URL. `link` (ver `openHistory`) es la clave:
+/// cada atajo crea una pantalla nueva con sus filtros.
+Widget transactionsRouteBuilder(BuildContext context, GoRouterState state) {
+  final query = state.uri.queryParameters;
+  return TransactionsScreen(
+    key: ValueKey(query['link']),
+    account: query['account'],
+    merchant: query['merchant'],
+    category: query['category'],
+    type: query['type'],
+    reportOnly: query['report'] == 'true',
+    withoutMerchant: query['withoutMerchant'] == 'true',
+    start: DateTime.tryParse(query['start'] ?? ''),
+    end: DateTime.tryParse(query['end'] ?? ''),
+    quotaPeriod: query['quotaPeriod'] == 'true',
+    unclassified: query['unclassified'] == 'true',
   );
 }
