@@ -8,10 +8,14 @@ final class PaymentReminderRequest {
     required this.body,
     required this.localDateTime,
     this.revision,
+    this.channel,
   });
   final String id, obligationId, title, body;
   final DateTime localDateTime;
   final int? revision;
+
+  /// Android channel; absent means payment reminders.
+  final String? channel;
   Map<String, Object> toMap() {
     if (id.isEmpty || obligationId.isEmpty || localDateTime.isUtc) {
       throw ArgumentError('El recordatorio requiere identidad y hora local.');
@@ -23,6 +27,7 @@ final class PaymentReminderRequest {
       'body': body,
       'localDateTime': localDateTime.toIso8601String(),
       'revision': ?revision,
+      'channel': ?channel,
     };
   }
 }

@@ -30,5 +30,6 @@ void main() {
     expect(find.text('Reportes'), findsNothing);
     expect(find.text('Backup cifrado'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
   });
 }

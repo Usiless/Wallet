@@ -2,6 +2,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/backup/backup_service.dart';
 import '../core/database/app_database.dart';
+import '../core/notifications/expense_check_reminders.dart';
+import '../core/notifications/expense_check_store.dart';
 import '../core/notifications/native_notification_bridge.dart';
 import '../core/notifications/payment_reminder_bridge.dart';
 import '../features/payments/domain/pending_payment_service.dart';
@@ -39,6 +41,17 @@ final paymentReminderBridgeProvider = Provider(
 
 final settingsProvider = Provider(
   (ref) => SettingsRepository(ref.watch(databaseProvider)),
+);
+final expenseCheckSettingsProvider = StreamProvider<ExpenseCheckSettings>(
+  (ref) => watchExpenseCheckSettings(ref.watch(settingsProvider)),
+);
+
+/// Day boundary is fixed when first watched; resuming forces a fresh check.
+final manualActivityTodayProvider = StreamProvider<bool>(
+  (ref) => watchManualTransactionCreatedOn(
+    ref.watch(databaseProvider),
+    DateTime.now(),
+  ),
 );
 final manualTemplateServiceProvider = Provider(
   (ref) => ManualTemplateService(ref.watch(databaseProvider)),

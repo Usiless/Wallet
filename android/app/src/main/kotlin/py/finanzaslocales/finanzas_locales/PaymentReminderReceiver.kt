@@ -37,6 +37,7 @@ internal object PaymentReminderAgenda {
     const val ALARM = "py.finanzaslocales.PAYMENT_REMINDER"
     const val OPEN = "py.finanzaslocales.OPEN_PAYMENT"
     const val CHANNEL = "payment_reminders_v1"
+    const val EXPENSE_CHANNEL = "expense_check_v1"
     private fun preferences(c: Context) = c.getSharedPreferences("payment_reminders", Context.MODE_PRIVATE)
     private fun read(c: Context): JSONObject {
         val value = preferences(c).getString("encrypted", null) ?: return JSONObject().put("generation", "").put("requests", JSONArray()).put("delivered", JSONArray())
@@ -47,7 +48,10 @@ internal object PaymentReminderAgenda {
     }
     private fun manager(c: Context) = c.getSystemService(NotificationManager::class.java)
     private fun channel(c: Context) {
-        if (Build.VERSION.SDK_INT >= 26) manager(c).createNotificationChannel(NotificationChannel(CHANNEL, "Pagos pendientes", NotificationManager.IMPORTANCE_DEFAULT))
+        if (Build.VERSION.SDK_INT >= 26) {
+            manager(c).createNotificationChannel(NotificationChannel(CHANNEL, "Pagos pendientes", NotificationManager.IMPORTANCE_DEFAULT))
+            manager(c).createNotificationChannel(NotificationChannel(EXPENSE_CHANNEL, "Recordatorio de gastos", NotificationManager.IMPORTANCE_DEFAULT))
+        }
     }
     fun permission(c: Context): Boolean {
         channel(c)
@@ -78,7 +82,7 @@ internal object PaymentReminderAgenda {
 
     private fun entry(state: JSONObject, r: JSONObject) = PaymentReminderEntry(
         r.getString("id"),
-        listOf("obligationId", "title", "body", "localDateTime", "revision").map { r.optString(it, "") },
+        listOf("obligationId", "title", "body", "localDateTime", "revision", "channel").map { r.optString(it, "") },
         r.optString("generation", state.optString("generation", "")),
         millis(r),
     )
@@ -92,6 +96,7 @@ internal object PaymentReminderAgenda {
             require(id.isNotBlank() && id.length <= 512 && unique.add(id))
             require(r.getString("obligationId").isNotBlank() && r.getString("obligationId").length <= 160)
             require(r.getString("title").length <= 240 && r.getString("body").length <= 500)
+            require(r.optString("channel", "payment") in setOf("payment", "expense"))
             millis(r) // Validate all requests before replacing the valid agenda.
             array.put(r)
         }
@@ -136,11 +141,21 @@ internal object PaymentReminderAgenda {
         if (id == null || id in delivered(state)) return
         if (entries(state).none { it.getString("id") == id && entry(state, it).generation == generation } || !permission(c)) return
         val done = delivered(state)
-        entries(state).filter { it.getString("id") !in done && millis(it) <= System.currentTimeMillis() }.forEach { r ->
-            notifyOne(c, state, entry(state, r).generation, r)
+        val byId = entries(state).associateBy { it.getString("id") }
+        val due = byId.values.filter { it.getString("id") !in done && millis(it) <= System.currentTimeMillis() }
+        val (notify, skipped) = collapseDailyBacklog(due.map { entry(state, it) }) { isDaily(byId.getValue(it.id)) }
+        skipped.forEach { state.getJSONArray("delivered").put(it) }
+        notify.forEach { e ->
+            val r = byId.getValue(e.id)
+            // A new daily notice replaces yesterday's unanswered one.
+            if (isDaily(r)) byId.values.filter { isDaily(it) && it.getString("id") != e.id }
+                .forEach { manager(c).cancel("payment:${it.getString("id")}", 0) }
+            notifyOne(c, state, e.generation, r)
         }
+        if (notify.isEmpty() && skipped.isNotEmpty()) write(c, state)
         schedule(c, state)
     }
+    private fun isDaily(r: JSONObject) = r.optString("channel") == "expense"
     private fun notifyOne(c: Context, state: JSONObject, generation: String?, r: JSONObject) {
         val id = r.getString("id")
         val contentIntent = Intent(c, MainActivity::class.java).setAction(OPEN)
@@ -148,7 +163,8 @@ internal object PaymentReminderAgenda {
             .putExtra("reminderGeneration", generation).putExtra("reminderId", id)
             .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         val pending = PendingIntent.getActivity(c, 0, contentIntent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
-        val notification = NotificationCompat.Builder(c, CHANNEL)
+        val channelId = if (isDaily(r)) EXPENSE_CHANNEL else CHANNEL
+        val notification = NotificationCompat.Builder(c, channelId)
             .setSmallIcon(android.R.drawable.ic_popup_reminder).setContentTitle(r.getString("title"))
             .setContentText(r.getString("body")).setContentIntent(pending).setAutoCancel(true)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE).build()

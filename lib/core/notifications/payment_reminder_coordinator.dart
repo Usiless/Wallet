@@ -15,6 +15,7 @@ final class PaymentReminderCoordinator {
     List<PendingPayment> payments, {
     DateTime? now,
     bool force = false,
+    List<PaymentReminderRequest> extra = const [],
   }) async {
     final inputs = <PaymentReminderInput>[];
     var invalidSettings = false;
@@ -45,11 +46,14 @@ final class PaymentReminderCoordinator {
     }
     // Native storage needs historical identities to preserve displayed notices;
     // only future requests become alarms, and newly introduced past ones are skipped.
-    final requests = const PaymentReminderScheduler().schedule(
-      inputs,
-      now: now ?? DateTime.now(),
-      retainElapsed: true,
-    );
+    final requests = [
+      ...const PaymentReminderScheduler().schedule(
+        inputs,
+        now: now ?? DateTime.now(),
+        retainElapsed: true,
+      ),
+      ...extra,
+    ]..sort((a, b) => a.localDateTime.compareTo(b.localDateTime));
     final signature = jsonEncode(requests.map((r) => r.toMap()).toList());
     if (!force && signature == _lastSignature) {
       return _lastPermitted && !invalidSettings;

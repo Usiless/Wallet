@@ -3,6 +3,8 @@ import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/security/app_lock_service.dart';
+import '../core/notifications/expense_check_reminders.dart';
+import '../core/notifications/expense_check_store.dart';
 import '../core/notifications/native_notification_bridge.dart';
 import '../core/notifications/payment_reminder_coordinator.dart';
 import '../core/config/feature_flags.dart';
@@ -65,11 +67,22 @@ class _FinanzasAppState extends ConsumerState<FinanzasApp>
         final payments =
             (force ? null : _reminderPayments) ??
             await ref.read(pendingPaymentServiceProvider).list();
+        final now = DateTime.now();
+        final expenseCheck = expenseCheckReminders(
+          await readExpenseCheckSettings(ref.read(settingsProvider)),
+          now: now,
+          registeredToday: await hasManualTransactionCreatedOn(
+            ref.read(databaseProvider),
+            now,
+          ),
+        );
         if (!mounted) return;
         await _reminderCoordinator.synchronize(
           ref.read(paymentReminderBridgeProvider),
           payments,
+          now: now,
           force: force,
+          extra: expenseCheck,
         );
       } while (_reminderRefreshRequested && mounted);
     } catch (_) {
@@ -91,7 +104,9 @@ class _FinanzasAppState extends ConsumerState<FinanzasApp>
         final paymentId = await ref
             .read(paymentReminderBridgeProvider)
             .consumeOpenAction();
-        if (mounted && paymentId != null) {
+        if (mounted && paymentId == expenseCheckObligationId) {
+          ref.read(routerProvider).go('/transactions/new?type=expense');
+        } else if (mounted && paymentId != null) {
           final payment = await ref
               .read(pendingPaymentServiceProvider)
               .read(paymentId);
@@ -210,7 +225,11 @@ class _FinanzasAppState extends ConsumerState<FinanzasApp>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _ingestNativeQueue();
+    if (state == AppLifecycleState.resumed) {
+      // Renews the day boundary of today's manual activity after midnight.
+      ref.invalidate(manualActivityTodayProvider);
+      _ingestNativeQueue();
+    }
   }
 
   @override
@@ -218,6 +237,8 @@ class _FinanzasAppState extends ConsumerState<FinanzasApp>
     ref.listen(pendingPaymentsProvider, (_, next) {
       if (next.hasValue) _reconcileReminders(payments: next.requireValue);
     });
+    ref.listen(expenseCheckSettingsProvider, (_, _) => _reconcileReminders());
+    ref.listen(manualActivityTodayProvider, (_, _) => _reconcileReminders());
     final router = ref.watch(routerProvider);
     final lock = AppLockService(ref.watch(settingsProvider));
     return MaterialApp.router(

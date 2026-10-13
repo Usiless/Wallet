@@ -9,6 +9,7 @@ import '../../../core/errors/user_message.dart';
 import '../../../core/security/app_lock_service.dart';
 import '../../../shared/widgets/text_prompt_dialog.dart';
 import '../../updater/presentation/update_flow.dart';
+import 'expense_check_tiles.dart';
 
 final class SettingsScreen extends ConsumerStatefulWidget {
   const SettingsScreen({this.backups = false, super.key});
@@ -73,6 +74,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
               title: const Text('Movimientos programados'),
               onTap: () => context.push('/templates?scheduled=true'),
             ),
+            const ExpenseCheckTiles(),
             ListTile(
               leading: const Icon(Icons.contactless),
               title: const Text('Google Wallet'),

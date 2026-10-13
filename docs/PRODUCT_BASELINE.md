@@ -2,6 +2,10 @@
 
 Decisiones asentadas hasta 2026-10-10. Este documento conserva las decisiones aprobadas y su contexto de autorización. El estado actual y las prioridades están en [ROADMAP.md](ROADMAP.md); los procedimientos, en [DEVELOPMENT.md](DEVELOPMENT.md).
 
+## Recordatorio de gastos · aprobación explícita 2026-10-13
+
+El usuario aprobó el plan de un aviso diario «¿Ya cargaste tus gastos de hoy?». Está en Ajustes → Organización, desactivado por defecto, a las 21:00 con hora editable. No llega si ese día se registró un movimiento manual, comprobado al abrir/volver a la app o al guardar; con la app cerrada no se consulta la base. Reutiliza la agenda nativa de recordatorios de pagos con un canal propio de Android, «Recordatorio de gastos», y programa los próximos 60 días en cada sincronización. Tocarlo abre un gasto nuevo. En la misma consulta el usuario descartó por ahora la lectura de SMS como función normal, por falta de información para registrar bien desde los mensajes: SMS sigue experimental.
+
 ## Mejoras de UX · aprobación explícita 2026-10-10
 
 El usuario eligió las propuestas de la revisión de interfaz (P01–P04, P07, P09–P17, P20–P22), las verificó en Android («todo funciona») y autorizó la fusión. No cambian reglas financieras, almacenamiento ni backup.

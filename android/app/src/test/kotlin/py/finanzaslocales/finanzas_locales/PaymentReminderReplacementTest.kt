@@ -34,4 +34,12 @@ class PaymentReminderReplacementTest {
         assertEquals(listOf("a"), result.invalidated.map { it.id })
         assertTrue(result.delivered.isEmpty())
     }
+
+    @Test fun missedDailyChecksCollapseToLatestWhilePaymentsAreAllDelivered() {
+        val due = listOf(entry("pay1", at = 1), entry("daily1", at = 2), entry("pay2", at = 3), entry("daily3", at = 5), entry("daily2", at = 4))
+        val (notify, skipped) = collapseDailyBacklog(due) { it.id.startsWith("daily") }
+        assertEquals(listOf("pay1", "pay2", "daily3"), notify.map { it.id })
+        assertEquals(setOf("daily1", "daily2"), skipped)
+        assertTrue(collapseDailyBacklog(listOf(entry("pay"))) { false }.second.isEmpty())
+    }
 }

@@ -324,5 +324,6 @@ void main() {
     expect(find.text('Cuentas'), findsNothing);
     expect(find.text('Google Wallet'), findsOneWidget);
     await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
   });
 }
