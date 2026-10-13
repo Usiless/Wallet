@@ -9,7 +9,6 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 
 import '../../../core/errors/app_exception.dart';
-import '../../../core/settings/settings_repository.dart';
 import '../domain/app_version.dart';
 import '../domain/release_info.dart';
 import 'update_log.dart';
@@ -17,9 +16,6 @@ import 'update_log.dart';
 const _userAgent = 'Cabal-updater';
 const _requestTimeout = Duration(seconds: 15);
 const _downloadIdleTimeout = Duration(seconds: 30);
-const _checkedAtKey = 'updater_checked_at';
-const _latestReleaseKey = 'updater_latest_release';
-const _noReleaseValue = 'none';
 final _sha256Pattern = RegExp(r'^[0-9a-fA-F]{64}$');
 
 Future<String> _packageVersion() async =>
@@ -30,40 +26,29 @@ Future<Directory> _defaultDownloadDirectory() async {
   return Directory(p.join(temporary.path, 'updates'));
 }
 
-DateTime _utcNow() => DateTime.now().toUtc();
-
 final class UpdateService {
   UpdateService({
-    required SettingsRepository settings,
     http.Client? client,
     Future<String> Function()? installedVersion,
     Future<Directory> Function()? downloadDirectory,
-    DateTime Function()? now,
     String repository = 'Usiless/Wallet',
-  }) : _settings = settings,
-       _client = client ?? http.Client(),
+  }) : _client = client ?? http.Client(),
        _ownsClient = client == null,
        _installedVersion = installedVersion ?? _packageVersion,
        _downloadDirectory = downloadDirectory ?? _defaultDownloadDirectory,
-       _now = now ?? _utcNow,
        _repository = repository;
 
-  static const cacheDuration = Duration(hours: 1);
-
-  final SettingsRepository _settings;
   final http.Client _client;
   final bool _ownsClient;
   final Future<String> Function() _installedVersion;
   final Future<Directory> Function() _downloadDirectory;
-  final DateTime Function() _now;
   final String _repository;
 
   /// Release más nueva que la instalada, o null si no hay.
-  /// Usa la caché si tiene menos de [cacheDuration]; la comparación con la versión
-  /// instalada se hace siempre al leer (la caché guarda la release, no el veredicto).
+  /// Consulta GitHub en cada llamada: solo se invoca a pedido del usuario.
   /// Lanza UpdateException: offline (SocketException/timeout/ClientException),
   /// rateLimited (403 o 429), server (otro código ≠ 200/404, JSON inválido).
-  /// 404 (repo sin releases) → null y se cachea como «sin release».
+  /// 404 (repo sin releases) → null.
   Future<ReleaseInfo?> checkForUpdate() async {
     final rawInstalled = await _installedVersion();
     final installed = AppVersion.tryParse(rawInstalled);
@@ -146,18 +131,6 @@ final class UpdateService {
   }
 
   Future<ReleaseInfo?> _latestRelease() async {
-    final now = _now().toUtc();
-    final cached = await _readCache(now);
-    if (cached != null) {
-      updaterLog(
-        cached.release == null
-            ? 'caché usada: sin release'
-            : 'caché usada: ${cached.release!.tag}',
-      );
-      return cached.release;
-    }
-
-    updaterLog('consulta GitHub (sin caché vigente)');
     final url = Uri.https(
       'api.github.com',
       '/repos/$_repository/releases/latest',
@@ -183,11 +156,9 @@ final class UpdateService {
           );
         }
         updaterLog('release ${release.tag} con APK ${release.apk.name}');
-        await _writeCache(now, release);
         return release;
       case 404:
         updaterLog('sin releases publicadas');
-        await _writeCache(now, null);
         return null;
       case 403 || 429:
         throw const UpdateException(
@@ -201,28 +172,6 @@ final class UpdateService {
           technicalDetail: 'HTTP ${response.statusCode}',
         );
     }
-  }
-
-  Future<({ReleaseInfo? release})?> _readCache(DateTime now) async {
-    final checkedRaw = await _settings.read(_checkedAtKey);
-    final checkedAt = checkedRaw == null ? null : DateTime.tryParse(checkedRaw);
-    if (checkedAt == null) return null;
-    final age = now.difference(checkedAt);
-    if (age.isNegative || age >= cacheDuration) return null;
-
-    final value = await _settings.read(_latestReleaseKey);
-    if (value == null) return null;
-    if (value == _noReleaseValue) return (release: null);
-    final release = _parseCachedRelease(value);
-    return release == null ? null : (release: release);
-  }
-
-  Future<void> _writeCache(DateTime now, ReleaseInfo? release) async {
-    await _settings.write(_checkedAtKey, now.toIso8601String());
-    await _settings.write(
-      _latestReleaseKey,
-      release == null ? _noReleaseValue : jsonEncode(release.toJson()),
-    );
   }
 
   ReleaseInfo? _parseRelease(String body) {
@@ -248,12 +197,6 @@ final class UpdateService {
           asset['name'] is String &&
           (asset['name'] as String).endsWith('.sha256'),
     );
-  }
-
-  ReleaseInfo? _parseCachedRelease(String value) {
-    final decoded = _decodeJson(value);
-    if (decoded is! Map<String, Object?>) return null;
-    return ReleaseInfo.fromJson(decoded);
   }
 
   Object? _decodeJson(String text) {

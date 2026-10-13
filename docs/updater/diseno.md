@@ -14,7 +14,7 @@ Rama `feature/in-app-updater`, worktree `../Wallet-updater`, base `master` (ba99
 SettingsScreen ──tap──▶ checkForUpdates(context, ref)            [B, presentation/update_flow.dart]
                           │
                           ├─ UpdateService.checkForUpdate()       [A, data/update_service.dart]
-                          │     ├─ caché 1 h en SettingsRepository (app_settings de Drift)
+                          │     ├─ sin caché: consulta GitHub en cada pedido manual
                           │     ├─ GET releases/latest (http)
                           │     ├─ ReleaseInfo.fromGitHubJson      [A, domain/release_info.dart]
                           │     └─ AppVersion.compareTo            [A, domain/app_version.dart]
@@ -100,10 +100,6 @@ final class ReleaseInfo {
 
   /// null si el tag no es una versión válida o si no hay asset .apk.
   static ReleaseInfo? fromGitHubJson(Map<String, dynamic> json);
-
-  /// Formato propio de la caché (borde de serialización).
-  Map<String, Object?> toJson();
-  static ReleaseInfo? fromJson(Map<String, Object?> json);
 }
 
 final class DownloadProgress {
@@ -119,22 +115,17 @@ final class DownloadProgress {
 ```dart
 final class UpdateService {
   UpdateService({
-    required SettingsRepository settings,
     http.Client? client,                                // por defecto http.Client()
     Future<String> Function()? installedVersion,        // por defecto PackageInfo.fromPlatform().version
     Future<Directory> Function()? downloadDirectory,    // por defecto <getTemporaryDirectory()>/updates
-    DateTime Function()? now,                           // por defecto DateTime.now().toUtc()
     String repository = 'Usiless/Wallet',
   });
 
-  static const cacheDuration = Duration(hours: 1);
-
   /// Release más nueva que la instalada, o null si no hay.
-  /// Usa la caché si tiene menos de [cacheDuration]; la comparación con la versión
-  /// instalada se hace siempre al leer (la caché guarda la release, no el veredicto).
+  /// Consulta GitHub en cada llamada: solo se invoca a pedido del usuario.
   /// Lanza UpdateException: offline (SocketException/timeout/ClientException),
   /// rateLimited (403 o 429), server (otro código ≠ 200/404, JSON inválido).
-  /// 404 (repo sin releases) → null y se cachea como «sin release».
+  /// 404 (repo sin releases) → null.
   Future<ReleaseInfo?> checkForUpdate();
 
   /// Descarga el APK a downloadDirectory, verifica tamaño y SHA-256 y devuelve el archivo final.
@@ -153,7 +144,7 @@ final class UpdateService {
 }
 ```
 
-Claves de caché en `app_settings`: `updater_checked_at` (ISO-8601 UTC) y `updater_latest_release` (JSON de `ReleaseInfo.toJson()` o la cadena `none`). Un 403/429/sin red no escribe la caché.
+Sin caché desde 2026-10-13, a pedido del usuario: con la caché de 1 h una release recién publicada no aparecía hasta que vencía. La consulta es solo manual, así que el límite de GitHub sin token (60 por hora) no se alcanza en la práctica. Las claves viejas `updater_checked_at` y `updater_latest_release` pueden quedar en `app_settings` y no se leen.
 
 Peticiones a la API: headers `Accept: application/vnd.github+json`, `X-GitHub-Api-Version: 2022-11-28`, `User-Agent: Cabal-updater`; timeout de 15 s. Descarga: timeout de inactividad de 30 s entre fragmentos. El archivo .sha256 acepta el formato de `sha256sum` (`<hex>  <archivo>`): se toma el primer token de 64 hex, sin distinguir mayúsculas.
 
@@ -238,7 +229,7 @@ Textos mínimos (preferencia del proyecto): título «Versión X.Y.Z», notas en
 
 - `Usiless/Wallet` devolvía 404 sin token (privado). Decisión del usuario: hacerlo público; la app no lleva credenciales.
 - El manifest de release no tenía `INTERNET` y `PRODUCT_BASELINE.md` dice «sin cuenta de usuario ni servidor». Decisión del usuario: la consulta es **solo manual** desde Ajustes; no hay verificación al iniciar. Se agrega `INTERNET` al manifest principal porque la consulta manual la necesita.
-- La app ya persiste ajustes en `app_settings` (Drift) vía `SettingsRepository`. Decisión del usuario: la caché de 1 h va ahí en lugar de `shared_preferences`.
+- La app ya persiste ajustes en `app_settings` (Drift) vía `SettingsRepository`. Decisión del usuario: la caché de 1 h va ahí en lugar de `shared_preferences` (caché eliminada el 2026-10-13).
 - `AppException` es `sealed`: `UpdateException` tiene que vivir en `app_exception.dart`.
 - `minSdk 24`: `canRequestPackageInstalls()` existe desde API 26; por debajo se devuelve true y el sistema usa el ajuste global de orígenes desconocidos.
 - Base de `master` con `.gitignore` modificado sin commitear en el repo principal; ese cambio no entra en esta rama.
@@ -248,7 +239,7 @@ Textos mínimos (preferencia del proyecto): título «Versión X.Y.Z», notas en
 - *Instalador*: `open_filex` / `install_plugin` / canal propio. Se elige **canal propio** (`UpdateInstaller.kt` + `androidx.core.content.FileProvider`): la app ya usa `MethodChannel`s y `androidx.core` (NotificationCompat), son ~60 líneas, no suma un plugin de terceros con permisos propios y permite manejar `canRequestPackageInstalls` y `ACTION_MANAGE_UNKNOWN_APP_SOURCES` sin otro paquete.
 - *Directorio de descarga*: `getTemporaryDirectory()/updates` (= `cacheDir/updates` en Android), expuesto por FileProvider con `<cache-path path="updates/">`. Solo se comparte esa subcarpeta; el sistema puede limpiarla y no entra en backups.
 - *Logging*: `debugPrint` con prefijo en lugar de `developer.log`, porque `developer.log` no llega a logcat en release y el pedido es poder ver el rastro (en especial un hash que no coincide).
-- *Caché*: se guarda la release, no el veredicto, para que tras instalar la nueva versión la caché no ofrezca de nuevo la misma.
+- *Caché* (eliminada el 2026-10-13): se guardaba la release, no el veredicto, para que tras instalar la nueva versión la caché no ofreciera de nuevo la misma.
 - *Sin `.sha256`*: se instala igual y se registra una advertencia (el pedido dice «si la release incluye…»). Se verifica igualmente el tamaño contra `size` del asset.
 
 **Decisiones durante la implementación y revisión**

@@ -68,35 +68,6 @@ void main() {
     expect(ReleaseInfo.fromGitHubJson({'tag_name': 'v1.3.0'}), isNull);
   });
 
-  test('toJson and fromJson round-trip', () {
-    final release = ReleaseInfo.fromGitHubJson({
-      'tag_name': 'v1.3.0',
-      'body': 'Notas',
-      'assets': [asset('app.apk', size: 42), asset('app.apk.sha256')],
-    })!;
-    final restored = ReleaseInfo.fromJson(release.toJson())!;
-    expect(restored.tag, release.tag);
-    expect(restored.version, release.version);
-    expect(restored.notes, release.notes);
-    expect(restored.apk.name, 'app.apk');
-    expect(restored.apk.size, 42);
-    expect(restored.apk.downloadUrl, release.apk.downloadUrl);
-    expect(restored.checksum?.name, 'app.apk.sha256');
-  });
-
-  test('fromJson rejects malformed cache entries', () {
-    expect(ReleaseInfo.fromJson({'tag': 'v1.3.0'}), isNull);
-    expect(
-      ReleaseInfo.fromJson({
-        'tag': 'nope',
-        'notes': '',
-        'apk': {'name': 'a.apk', 'url': 'https://e.com/a.apk', 'size': 1},
-        'checksum': null,
-      }),
-      isNull,
-    );
-  });
-
   test('ignores assets with unsafe names or non-https urls', () {
     Map<String, dynamic> raw(String name, String url) => {
       'name': name,
@@ -126,24 +97,6 @@ void main() {
       'assets': [raw('../evil.apk', url), raw('app.apk', url)],
     })!;
     expect(release.apk.name, 'app.apk');
-  });
-
-  test('fromJson rejects unsafe cached assets', () {
-    Map<String, Object?> cached(String name, String url) => {
-      'tag': 'v1.3.0',
-      'notes': '',
-      'apk': {'name': name, 'url': url, 'size': 1},
-      'checksum': null,
-    };
-    expect(
-      ReleaseInfo.fromJson(cached('../a.apk', 'https://e.com/a.apk')),
-      isNull,
-    );
-    expect(ReleaseInfo.fromJson(cached('a.apk', 'http://e.com/a.apk')), isNull);
-    expect(
-      ReleaseInfo.fromJson(cached('a.apk', 'https://e.com/a.apk')),
-      isNotNull,
-    );
   });
 
   test('download progress fraction is bounded and null when unknown', () {

@@ -113,7 +113,7 @@ final backupServiceProvider = Provider(
   (ref) => BackupService(ref.watch(databaseProvider)),
 );
 final updateServiceProvider = Provider((ref) {
-  final service = UpdateService(settings: ref.watch(settingsProvider));
+  final service = UpdateService();
   ref.onDispose(service.close);
   return service;
 });

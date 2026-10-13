@@ -71,34 +71,6 @@ final class ReleaseInfo {
       checksum: checksum,
     );
   }
-
-  /// Formato propio de la caché (borde de serialización).
-  Map<String, Object?> toJson() => {
-    'tag': tag,
-    'notes': notes,
-    'apk': _assetToJson(apk),
-    'checksum': checksum == null ? null : _assetToJson(checksum!),
-  };
-
-  static ReleaseInfo? fromJson(Map<String, Object?> json) {
-    final tag = json['tag'];
-    final notes = json['notes'];
-    if (tag is! String || notes is! String) return null;
-    final version = AppVersion.tryParse(tag);
-    if (version == null) return null;
-    final apk = _assetFromJson(json['apk']);
-    if (apk == null) return null;
-    final rawChecksum = json['checksum'];
-    final checksum = rawChecksum == null ? null : _assetFromJson(rawChecksum);
-    if (rawChecksum != null && checksum == null) return null;
-    return ReleaseInfo(
-      tag: tag,
-      version: version,
-      notes: notes,
-      apk: apk,
-      checksum: checksum,
-    );
-  }
 }
 
 ReleaseAsset? _assetFromGitHub(Map<String, dynamic> json) {
@@ -118,24 +90,6 @@ bool _isPlainFileName(String name) =>
     name != '..' &&
     !name.contains('\\') &&
     p.basename(name) == name;
-
-ReleaseAsset? _assetFromJson(Object? raw) {
-  if (raw is! Map<String, Object?>) return null;
-  final name = raw['name'];
-  final url = raw['url'];
-  final size = raw['size'];
-  if (name is! String || url is! String || size is! int) return null;
-  if (!_isPlainFileName(name)) return null;
-  final uri = Uri.tryParse(url);
-  if (uri == null || uri.scheme != 'https') return null;
-  return ReleaseAsset(name: name, downloadUrl: uri, size: size);
-}
-
-Map<String, Object?> _assetToJson(ReleaseAsset asset) => {
-  'name': asset.name,
-  'url': asset.downloadUrl.toString(),
-  'size': asset.size,
-};
 
 final class DownloadProgress {
   const DownloadProgress(this.received, this.total);

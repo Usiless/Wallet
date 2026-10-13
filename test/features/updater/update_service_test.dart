@@ -3,10 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:crypto/crypto.dart';
-import 'package:drift/native.dart';
-import 'package:finanzas_locales/core/database/app_database.dart';
 import 'package:finanzas_locales/core/errors/app_exception.dart';
-import 'package:finanzas_locales/core/settings/settings_repository.dart';
 import 'package:finanzas_locales/features/updater/data/update_service.dart';
 import 'package:finanzas_locales/features/updater/domain/release_info.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -41,32 +38,23 @@ http.Response jsonResponse(Object body, [int status = 200]) =>
     http.Response(jsonEncode(body), status);
 
 void main() {
-  late AppDatabase database;
-  late SettingsRepository settings;
   late Directory tempDir;
   late Directory downloadDir;
-  var clock = DateTime.utc(2026, 10, 11, 12);
 
   setUp(() async {
-    database = AppDatabase.forTesting(NativeDatabase.memory());
-    settings = SettingsRepository(database);
     tempDir = await Directory.systemTemp.createTemp('updater_test');
     downloadDir = Directory('${tempDir.path}/updates');
-    clock = DateTime.utc(2026, 10, 11, 12);
   });
 
   tearDown(() async {
-    await database.close();
     await tempDir.delete(recursive: true);
   });
 
   UpdateService service(http.Client client, {String installed = '1.2.0'}) =>
       UpdateService(
-        settings: settings,
         client: client,
         installedVersion: () async => installed,
         downloadDirectory: () async => downloadDir,
-        now: () => clock,
       );
 
   group('checkForUpdate', () {
@@ -93,51 +81,25 @@ void main() {
       expect(await service(client).checkForUpdate(), isNull);
     });
 
-    test('uses the cache within one hour and queries again after it', () async {
+    test('queries GitHub on every check', () async {
       var requests = 0;
       final client = MockClient((_) async {
         requests++;
         return jsonResponse(releaseJson());
       });
       final updates = service(client);
-
-      expect((await updates.checkForUpdate())?.tag, 'v1.3.0');
-      clock = clock.add(const Duration(minutes: 30));
-      expect((await updates.checkForUpdate())?.tag, 'v1.3.0');
-      expect(requests, 1);
-
-      clock = clock.add(const Duration(minutes: 31));
-      expect((await updates.checkForUpdate())?.tag, 'v1.3.0');
+      await updates.checkForUpdate();
+      await updates.checkForUpdate();
       expect(requests, 2);
     });
 
-    test(
-      'cached release is compared with the installed version on read',
-      () async {
-        final client = MockClient((_) async => jsonResponse(releaseJson()));
-        await service(client).checkForUpdate();
-        final afterInstall = service(
-          MockClient((_) async => fail('no debe consultar la red')),
-          installed: '1.3.0',
-        );
-        expect(await afterInstall.checkForUpdate(), isNull);
-      },
-    );
-
-    test('404 returns null and caches the absence of releases', () async {
-      var requests = 0;
-      final client = MockClient((_) async {
-        requests++;
-        return http.Response('{}', 404);
-      });
-      final updates = service(client);
-      expect(await updates.checkForUpdate(), isNull);
-      expect(await updates.checkForUpdate(), isNull);
-      expect(requests, 1);
+    test('404 returns null', () async {
+      final client = MockClient((_) async => http.Response('{}', 404));
+      expect(await service(client).checkForUpdate(), isNull);
     });
 
     for (final status in [403, 429]) {
-      test('HTTP $status throws rateLimited without caching', () async {
+      test('HTTP $status throws rateLimited', () async {
         final client = MockClient((_) async => http.Response('', status));
         await expectLater(
           service(client).checkForUpdate(),
@@ -149,11 +111,10 @@ void main() {
             ),
           ),
         );
-        expect(await settings.read('updater_checked_at'), isNull);
       });
     }
 
-    test('socket error and timeout throw offline without caching', () async {
+    test('socket error and timeout throw offline', () async {
       for (final error in [
         const SocketException('sin red'),
         TimeoutException('lento'),
@@ -170,7 +131,6 @@ void main() {
           ),
         );
       }
-      expect(await settings.read('updater_checked_at'), isNull);
     });
 
     test('other status codes and invalid JSON throw server', () async {
@@ -190,7 +150,6 @@ void main() {
           ),
         );
       }
-      expect(await settings.read('updater_checked_at'), isNull);
     });
   });
 
