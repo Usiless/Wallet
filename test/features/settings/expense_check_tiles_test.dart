@@ -48,6 +48,16 @@ void main() {
     );
     expect(methods, ['requestPermission']);
     expect(find.text('21:00'), findsOneWidget);
+    expect(find.text('Hasta'), findsNothing);
+
+    await tester.tap(find.text('Frecuencia'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Cada 3 h'));
+    await tester.pumpAndSettle();
+    expect(await SettingsRepository(db).read(expenseCheckEveryKey), '3');
+    expect(find.text('Desde'), findsOneWidget);
+    expect(find.text('Hasta'), findsOneWidget);
+    expect(find.text('22:00'), findsOneWidget);
 
     await tester.tap(toggle);
     await tester.pumpAndSettle();

@@ -71,7 +71,7 @@ class _FinanzasAppState extends ConsumerState<FinanzasApp>
         final expenseCheck = expenseCheckReminders(
           await readExpenseCheckSettings(ref.read(settingsProvider)),
           now: now,
-          registeredToday: await hasManualTransactionCreatedOn(
+          lastManualToday: await lastManualTransactionCreatedOn(
             ref.read(databaseProvider),
             now,
           ),

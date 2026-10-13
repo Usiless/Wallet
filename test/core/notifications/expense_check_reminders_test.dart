@@ -18,18 +18,13 @@ void main() {
         expenseCheckReminders(
           const ExpenseCheckSettings(),
           now: DateTime(2026, 10, 13, 10),
-          registeredToday: false,
         ),
         isEmpty,
       );
     });
 
     test('60 días a la hora elegida, incluido hoy aunque ya haya pasado', () {
-      final result = expenseCheckReminders(
-        on,
-        now: DateTime(2026, 10, 13, 23),
-        registeredToday: false,
-      );
+      final result = expenseCheckReminders(on, now: DateTime(2026, 10, 13, 23));
       expect(result, hasLength(60));
       expect(result.first.localDateTime, DateTime(2026, 10, 13, 21, 30));
       expect(result.last.localDateTime, DateTime(2026, 12, 11, 21, 30));
@@ -48,7 +43,7 @@ void main() {
       final result = expenseCheckReminders(
         on,
         now: DateTime(2026, 10, 31, 8),
-        registeredToday: true,
+        lastManualToday: DateTime(2026, 10, 31, 7),
       );
       expect(result.first.localDateTime, DateTime(2026, 11, 1, 21, 30));
       expect(result, hasLength(59));
@@ -56,13 +51,68 @@ void main() {
 
     test('cambiar la hora cambia la identidad de cada aviso', () {
       final now = DateTime(2026, 10, 13);
-      final a = expenseCheckReminders(on, now: now, registeredToday: false);
-      final b = expenseCheckReminders(
-        on.copyWith(hour: 20),
-        now: now,
-        registeredToday: false,
-      );
+      final a = expenseCheckReminders(on, now: now);
+      final b = expenseCheckReminders(on.copyWith(hour: 20), now: now);
       expect(a.first.id, isNot(b.first.id));
+    });
+
+    const repeating = ExpenseCheckSettings(
+      enabled: true,
+      hour: 9,
+      minute: 30,
+      everyHours: 4,
+      untilHour: 21,
+      untilMinute: 30,
+    );
+
+    test('cada X horas entre desde y hasta, incluidos los extremos', () {
+      final result = expenseCheckReminders(
+        repeating,
+        now: DateTime(2026, 10, 13, 8),
+        days: 2,
+      );
+      expect(result.map((r) => r.localDateTime), [
+        DateTime(2026, 10, 13, 9, 30),
+        DateTime(2026, 10, 13, 13, 30),
+        DateTime(2026, 10, 13, 17, 30),
+        DateTime(2026, 10, 13, 21, 30),
+        DateTime(2026, 10, 14, 9, 30),
+        DateTime(2026, 10, 14, 13, 30),
+        DateTime(2026, 10, 14, 17, 30),
+        DateTime(2026, 10, 14, 21, 30),
+      ]);
+    });
+
+    test('intervalos cortos se limitan a 240 avisos', () {
+      final result = expenseCheckReminders(
+        repeating.copyWith(hour: 0, minute: 0, everyHours: 1, untilHour: 23),
+        now: DateTime(2026, 10, 13),
+      );
+      expect(result, hasLength(240));
+      expect(result.last.localDateTime, DateTime(2026, 10, 22, 23));
+    });
+
+    test('hasta antes de desde deja solo el primero', () {
+      final result = expenseCheckReminders(
+        repeating.copyWith(untilHour: 8),
+        now: DateTime(2026, 10, 13),
+        days: 1,
+      );
+      expect(result.single.localDateTime, DateTime(2026, 10, 13, 9, 30));
+    });
+
+    test('un registro manual silencia los avisos dentro del intervalo', () {
+      final result = expenseCheckReminders(
+        repeating,
+        now: DateTime(2026, 10, 13, 14),
+        lastManualToday: DateTime(2026, 10, 13, 14),
+        days: 2,
+      );
+      expect(result.map((r) => r.localDateTime).take(3), [
+        DateTime(2026, 10, 13, 21, 30),
+        DateTime(2026, 10, 14, 9, 30),
+        DateTime(2026, 10, 14, 13, 30),
+      ]);
     });
   });
 
@@ -79,12 +129,24 @@ void main() {
       final initial = await readExpenseCheckSettings(settings);
       expect(initial.enabled, isFalse);
       expect((initial.hour, initial.minute), (21, 0));
+      expect(initial.everyHours, 0);
       await writeExpenseCheckSettings(settings, on.copyWith(minute: 5));
       expect(await settings.read(expenseCheckTimeKey), '21:05');
       final saved = await readExpenseCheckSettings(settings);
       expect((saved.enabled, saved.hour, saved.minute), (true, 21, 5));
       await settings.write(expenseCheckTimeKey, '25:00');
       expect((await readExpenseCheckSettings(settings)).hour, 21);
+      await writeExpenseCheckSettings(
+        settings,
+        on.copyWith(everyHours: 3, untilHour: 23, untilMinute: 15),
+      );
+      final repeating = await readExpenseCheckSettings(settings);
+      expect(
+        (repeating.everyHours, repeating.untilHour, repeating.untilMinute),
+        (3, 23, 15),
+      );
+      await settings.write(expenseCheckEveryKey, '5');
+      expect((await readExpenseCheckSettings(settings)).everyHours, 0);
     });
 
     Future<void> insert(String id, String source, DateTime createdAt) => db
@@ -103,17 +165,21 @@ void main() {
           ),
         );
 
-    test('solo un movimiento manual creado hoy cuenta', () async {
+    test('solo cuenta el último movimiento manual creado hoy', () async {
       final today = DateTime(2026, 10, 13, 12);
       await insert('ayer', 'manual', DateTime(2026, 10, 12, 23, 59));
       await insert('programado', 'recurring', today);
       await insert('wallet', 'googleWalletNotification', today);
-      expect(await hasManualTransactionCreatedOn(db, today), isFalse);
-      await insert('manual', 'manual', DateTime(2026, 10, 13, 0, 1));
-      expect(await hasManualTransactionCreatedOn(db, today), isTrue);
+      expect(await lastManualTransactionCreatedOn(db, today), isNull);
+      await insert('tarde', 'manual', DateTime(2026, 10, 13, 18));
+      await insert('temprano', 'manual', DateTime(2026, 10, 13, 0, 1));
       expect(
-        await hasManualTransactionCreatedOn(db, DateTime(2026, 10, 14)),
-        isFalse,
+        await lastManualTransactionCreatedOn(db, today),
+        DateTime(2026, 10, 13, 18),
+      );
+      expect(
+        await lastManualTransactionCreatedOn(db, DateTime(2026, 10, 14)),
+        isNull,
       );
     });
   });
@@ -132,7 +198,11 @@ void main() {
     final coordinator = PaymentReminderCoordinator();
     final now = DateTime(2026, 10, 13, 10);
     List<PaymentReminderRequest> daily(bool registered) =>
-        expenseCheckReminders(on, now: now, registeredToday: registered);
+        expenseCheckReminders(
+          on,
+          now: now,
+          lastManualToday: registered ? now : null,
+        );
 
     await coordinator.synchronize(bridge, [], now: now, extra: daily(false));
     expect(sent.single, hasLength(60));

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../../../app/providers.dart';
 import '../../../core/config/feature_flags.dart';
@@ -132,11 +133,15 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
             ListTile(
               leading: const Icon(Icons.info_outline),
               title: const Text('Información de la aplicación'),
-              onTap: () => showLicensePage(
-                context: context,
-                applicationName: 'Cabal',
-                applicationVersion: '0.1.0',
-              ),
+              onTap: () async {
+                final info = await PackageInfo.fromPlatform();
+                if (!context.mounted) return;
+                showLicensePage(
+                  context: context,
+                  applicationName: 'Cabal',
+                  applicationVersion: info.version,
+                );
+              },
             ),
           ],
           const SizedBox(height: 32),

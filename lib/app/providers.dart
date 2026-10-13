@@ -47,8 +47,8 @@ final expenseCheckSettingsProvider = StreamProvider<ExpenseCheckSettings>(
 );
 
 /// Day boundary is fixed when first watched; resuming forces a fresh check.
-final manualActivityTodayProvider = StreamProvider<bool>(
-  (ref) => watchManualTransactionCreatedOn(
+final manualActivityTodayProvider = StreamProvider<DateTime?>(
+  (ref) => watchLastManualTransactionCreatedOn(
     ref.watch(databaseProvider),
     DateTime.now(),
   ),
